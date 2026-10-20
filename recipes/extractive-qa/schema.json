@@ -1,0 +1,12 @@
+{
+  "title": "An answer quoted from the passage",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["answer"],
+  "properties": {
+    "answer": {"$ref": "#/$defs/quote"}
+  },
+  "$defs": {
+    "quote": {"type": "string", "minLength": 1, "maxLength": 200}
+  }
+}

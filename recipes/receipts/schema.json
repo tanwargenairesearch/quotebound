@@ -1,0 +1,34 @@
+{
+  "title": "A receipt's items and totals, every value copied from the receipt",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["items", "subtotal", "tax", "service", "discount", "total", "cash", "change", "card"],
+  "properties": {
+    "items": {
+      "type": "array",
+      "maxItems": 40,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "count", "price"],
+        "properties": {
+          "name": {"$ref": "#/$defs/quote"},
+          "count": {"$ref": "#/$defs/maybe"},
+          "price": {"$ref": "#/$defs/maybe"}
+        }
+      }
+    },
+    "subtotal": {"$ref": "#/$defs/maybe"},
+    "tax": {"$ref": "#/$defs/maybe"},
+    "service": {"$ref": "#/$defs/maybe"},
+    "discount": {"$ref": "#/$defs/maybe"},
+    "total": {"$ref": "#/$defs/maybe"},
+    "cash": {"$ref": "#/$defs/maybe"},
+    "change": {"$ref": "#/$defs/maybe"},
+    "card": {"$ref": "#/$defs/maybe"}
+  },
+  "$defs": {
+    "quote": {"type": "string", "minLength": 1, "maxLength": 80},
+    "maybe": {"anyOf": [{"$ref": "#/$defs/quote"}, {"type": "null"}]}
+  }
+}

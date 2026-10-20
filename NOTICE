@@ -1,0 +1,52 @@
+quotebound
+Copyright 2026 Mohit Tanwar
+
+This product is licensed under the Apache License, Version 2.0 (LICENSE). It contains code from, or modelled on,
+the projects below; their notices follow.
+
+1. MLX (https://github.com/ml-explore/mlx), MIT License
+   - src/exact.cpp: the Metal kernel is MLX's GEMVKernel (mlx/backend/metal/kernels/gemv.h, MLX 0.32.3), modified
+     to multiply V vectors in one pass with each vector's sums in the same order as the original.
+   - quotebound links libmlx at build time.
+
+2. mlx-lm (https://github.com/ml-explore/mlx-lm), MIT License
+   - tests/gated_delta_ref.h: mlx-lm 0.31.3's gated_delta Metal kernel (mlx_lm/models/gated_delta.py), unchanged,
+     used only as a test oracle.
+   - src/deltanet.cpp, src/model.cpp and src/generate.cpp reproduce mlx-lm's Qwen3 / Qwen3.5 model graphs, KV
+     cache growth, LoRA layer and checkpoint loading, so that outputs match mlx-lm token for token.
+
+The MIT License text for MLX and mlx-lm (identical for both):
+
+   MIT License
+   
+   Copyright © 2023 Apple Inc.
+   
+   Permission is hereby granted, free of charge, to any person obtaining a copy
+   of this software and associated documentation files (the "Software"), to deal
+   in the Software without restriction, including without limitation the rights
+   to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+   copies of the Software, and to permit persons to whom the Software is
+   furnished to do so, subject to the following conditions:
+   
+   The above copyright notice and this permission notice shall be included in all
+   copies or substantial portions of the Software.
+   
+   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+   IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+   FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+   AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+   LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+   OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+   SOFTWARE.
+
+3. simdjson (https://github.com/simdjson/simdjson), Apache License 2.0
+   Copyright 2018-2025 The simdjson authors.
+   quotebound links simdjson at build time; build_constrain_lib.sh compiles simdjson 4.6.3 into the Linux
+   constraint library.
+
+4. Qwen3 and Qwen3.5 tokenizers (https://huggingface.co/Qwen), Apache License 2.0
+   src/pretokenize.cpp implements the pre-tokenizer split patterns that the models' tokenizer.json files declare.
+   No model weights or tokenizer files are included.
+
+5. Unicode Character Database (https://www.unicode.org/), Unicode License v3
+   src/unicode.cpp holds a short table of character classes taken from the Unicode 16 and 17 data.

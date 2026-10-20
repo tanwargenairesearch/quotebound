@@ -1,0 +1,113 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Booking request",
+  "description": "A guest's message to a venue's booking desk, as facts. Figures are figure objects, choices {value, quote}. Quotes are the guest's words, copied exactly (letter case aside). Leave out any key with nothing to say.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["intents"],
+  "properties": {
+    "intents": {
+      "description": "What the guest wants. book: a table or room booked or held; price: what it would cost; change: a change to a booking already made. These may go together. general: a question about the venue itself. unknown: none of these.",
+      "anyOf": [
+        {"type": "array", "items": {"enum": ["book", "price", "change"]}, "minItems": 1, "maxItems": 3, "uniqueItems": true},
+        {"const": ["general"]},
+        {"const": ["unknown"]}
+      ]
+    },
+    "declined": {
+      "description": "The words asking for what the desk never does by message: taking a payment, or sharing another guest's booking.",
+      "$ref": "#/$defs/quote"
+    },
+    "venues": {
+      "description": "Each venue named, as written.",
+      "type": "array",
+      "items": {"$ref": "#/$defs/quote"},
+      "maxItems": 8,
+      "uniqueItems": true
+    },
+    "figures": {
+      "description": "Each figure stated, by what it is.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "guests": {"description": "how many people in all", "$ref": "#/$defs/figure"},
+        "children": {"description": "how many of them are children, with what it counts (\"two children\")", "$ref": "#/$defs/figure"},
+        "budget": {"description": "the money to spend", "$ref": "#/$defs/figure"},
+        "deposit_pct": {"description": "the deposit offered, as a percentage", "$ref": "#/$defs/figure"},
+        "hours": {"description": "how long the booking is for", "$ref": "#/$defs/figure"}
+      }
+    },
+    "choices": {
+      "description": "Each fact stated that takes one of a few values: the value, and the words that say it.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "party": {"$ref": "#/$defs/choice", "properties": {"value": {"enum": ["solo", "group"]}}},
+        "occasion": {"$ref": "#/$defs/choice", "properties": {"value": {"enum": ["birthday", "wedding", "business", "other"]}}},
+        "meal": {"$ref": "#/$defs/choice", "properties": {"value": {"enum": ["breakfast", "lunch", "dinner"]}}},
+        "seating": {"$ref": "#/$defs/choice", "properties": {"value": {"enum": ["indoor", "outdoor"]}}}
+      }
+    },
+    "attendees": {
+      "description": "Each person described, in the message's order.",
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 4,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "age": {"$ref": "#/$defs/figure"},
+          "diet": {"$ref": "#/$defs/choice", "properties": {"value": {"enum": ["any", "vegetarian", "vegan", "gluten_free"]}}},
+          "allergy": {"$ref": "#/$defs/choice", "properties": {"value": {"enum": ["nuts", "dairy", "shellfish"]}}}
+        }
+      }
+    },
+    "child_ages": {
+      "description": "Each child's age.",
+      "type": "array",
+      "items": {"$ref": "#/$defs/figure"},
+      "minItems": 1,
+      "maxItems": 10
+    },
+    "catering": {
+      "description": "The food and drink asked for; left out, not empty, when none is.",
+      "type": "object",
+      "additionalProperties": false,
+      "minProperties": 1,
+      "properties": {
+        "courses": {"$ref": "#/$defs/figure"},
+        "menu": {"$ref": "#/$defs/choice", "properties": {"value": {"enum": ["set", "a_la_carte", "buffet"]}}},
+        "drinks": {"$ref": "#/$defs/choice", "properties": {"value": {"enum": ["yes", "no"]}}}
+      }
+    }
+  },
+  "$defs": {
+    "quote": {
+      "description": "A stretch of the message, copied exactly.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 100
+    },
+    "figure": {
+      "description": "A number as stated: its value as a plain number, the words that state it, and what it is counted per when the words say.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["value", "quote"],
+      "properties": {
+        "value": {"type": "number", "minimum": 0},
+        "quote": {"$ref": "#/$defs/quote"},
+        "per": {"enum": ["person", "hour"]}
+      }
+    },
+    "choice": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["value", "quote"],
+      "properties": {
+        "value": {"type": "string"},
+        "quote": {"$ref": "#/$defs/quote"}
+      }
+    }
+  }
+}
