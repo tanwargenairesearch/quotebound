@@ -22,6 +22,9 @@ quotebound is one C++ program for Apple silicon. There is no Python in training 
 It was built for extracting facts from free text where a wrong value costs more than a missing one. If the answer
 must be the input's own words, the decoder enforces it rather than hoping for it.
 
+The [write-up](https://tanwargenairesearch.github.io/quotebound/) walks through real examples, the architecture,
+the training runs and per-input latency. Its source is [docs/index.html](docs/index.html).
+
 ## Requirements
 
 - An Apple silicon Mac on macOS 26. Tested on macOS 26.6.2, M4 Pro, 48 GB; the 4B trains in about 14 GB.

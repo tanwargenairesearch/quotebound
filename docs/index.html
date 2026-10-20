@@ -1,0 +1,1413 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>quotebound: local AI fine-tuning, with a decoder that can only quote its input</title>
+<meta name="description" content="Local AI fine-tuning: LoRA on Qwen3.5 natively on a Mac, JSON decoding whose quoted values must come from the input, an override log that marks where the model wanted to stray, and speculative decoding that changes no byte.">
+<meta property="og:title" content="quotebound: local AI fine-tuning, with a decoder that can only quote its input">
+<meta property="og:description" content="LoRA on Qwen3.5 in native C++ on MLX, quote-bound JSON decoding, and exact speculative decoding. Measured on SQuAD and CORD receipts.">
+<meta property="og:type" content="article">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;0,8..60,700;1,8..60,400&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg: #fbfaf7; --fg: #1c1b19; --muted: #5d5850; --faint: #8b857b; --rule: #e5e1d8; --panel: #f3f0e9; --card: #ffffff;
+  --accent: #2c6a58; --accent-soft: #e0ede7; --accent-ink: #ffffff;
+  --c2: #3f6aa8; --c2-soft: #e3eaf5;
+  --base: #c4beb2; --warn: #a3561a; --warn-soft: #f8e9da; --code-bg: #f3f0e9;
+  --serif: "Source Serif 4", "Iowan Old Style", Georgia, serif;
+  --sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #141412; --fg: #ebe7df; --muted: #b3ada2; --faint: #878177; --rule: #2d2b27; --panel: #1e1d1a; --card: #1a1917;
+    --accent: #7cc3a9; --accent-soft: #1c3029; --accent-ink: #10201a;
+    --c2: #8fb0e3; --c2-soft: #1d2738;
+    --base: #4d4943; --warn: #e6a46c; --warn-soft: #3a291b; --code-bg: #1e1d1a;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #141412; --fg: #ebe7df; --muted: #b3ada2; --faint: #878177; --rule: #2d2b27; --panel: #1e1d1a; --card: #1a1917;
+  --accent: #7cc3a9; --accent-soft: #1c3029; --accent-ink: #10201a;
+  --c2: #8fb0e3; --c2-soft: #1d2738;
+  --base: #4d4943; --warn: #e6a46c; --warn-soft: #3a291b; --code-bg: #1e1d1a;
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; scroll-behavior: smooth; }
+body { margin: 0; background: var(--bg); color: var(--fg); font: 18.5px/1.68 var(--serif); font-optical-sizing: auto; }
+.wrap { max-width: 760px; margin: 0 auto; padding: 0 16px; }
+.wide { max-width: 1040px; margin: 0 auto; padding: 0 16px; }
+header.top { border-bottom: 1px solid var(--rule); background: var(--bg); position: sticky; top: 0; z-index: 5; }
+header.top .bar { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 12px 16px; max-width: 1040px; margin: 0 auto; font: 500 14px/1.4 var(--sans); }
+header.top a { color: var(--muted); text-decoration: none; }
+header.top a:hover { color: var(--accent); }
+.brand { font: 600 15px/1 var(--mono); color: var(--fg) !important; }
+.navlinks a { margin-left: 16px; }
+.hero { padding: 64px 0 30px; }
+.kicker { font: 600 12.5px/1.4 var(--sans); letter-spacing: .1em; text-transform: uppercase; color: var(--accent); margin: 0 0 16px; }
+h1 { font: 700 clamp(32px, 6.4vw, 50px)/1.1 var(--serif); margin: 0 0 20px; letter-spacing: -.015em; }
+.dek { font-size: 21.5px; line-height: 1.5; color: var(--muted); margin: 0 0 24px; }
+.byline { font: 14px/1.5 var(--sans); color: var(--faint); }
+.cta { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 24px; font: 600 14px/1 var(--sans); }
+.cta a { padding: 12px 18px; border-radius: 8px; text-decoration: none; border: 1px solid var(--rule); color: var(--fg); background: var(--card); }
+.cta a.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.pillrow { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 26px; }
+.pill { font: 500 12.5px/1 var(--sans); padding: 7px 10px; border-radius: 999px; background: var(--panel); color: var(--muted); }
+h2 { font: 700 29px/1.22 var(--serif); margin: 64px 0 14px; letter-spacing: -.01em; scroll-margin-top: 70px; }
+h2 .num { font: 600 14px/1 var(--sans); color: var(--accent); display: block; margin-bottom: 8px; letter-spacing: .06em; }
+h3 { font: 600 15px/1.4 var(--sans); color: var(--fg); margin: 34px 0 8px; }
+p { margin: 0 0 18px; }
+a { color: var(--accent); }
+ul, ol { padding-left: 24px; margin: 0 0 18px; }
+li { margin: 0 0 8px; }
+code { font: 0.8em/1.4 var(--mono); background: var(--code-bg); padding: 2px 5px; border-radius: 4px; overflow-wrap: anywhere; }
+pre { font: 13px/1.6 var(--mono); background: var(--code-bg); border: 1px solid var(--rule); border-radius: 10px; padding: 16px 18px; overflow-x: auto; margin: 0 0 22px; }
+pre code { background: none; padding: 0; font-size: inherit; overflow-wrap: normal; }
+.toc { font: 15px/1.6 var(--sans); background: var(--panel); border-radius: 12px; padding: 18px 22px; margin: 6px 0; columns: 2; column-gap: 28px; }
+.toc b { display: block; font-size: 12px; letter-spacing: .08em; text-transform: uppercase; color: var(--faint); margin-bottom: 6px; column-span: all; }
+.toc a { display: block; color: var(--fg); text-decoration: none; padding: 2px 0; break-inside: avoid; }
+.toc a span { color: var(--accent); font-weight: 600; margin-right: 6px; }
+.toc a:hover { color: var(--accent); }
+.callout { border-left: 3px solid var(--accent); background: var(--accent-soft); padding: 14px 18px; border-radius: 0 10px 10px 0; margin: 0 0 22px; font-size: 17.5px; }
+.callout.warn { border-color: var(--warn); background: var(--warn-soft); }
+.callout p:last-child { margin: 0; }
+figure { margin: 10px 0 30px; }
+.panel { background: var(--card); border: 1px solid var(--rule); border-radius: 14px; padding: 18px 18px 14px; }
+.panel h4 { font: 600 14.5px/1.35 var(--sans); margin: 0 0 4px; }
+.panel .sub { font: 13px/1.45 var(--sans); color: var(--faint); margin: 0 0 12px; }
+figcaption { font: 13.5px/1.55 var(--sans); color: var(--faint); margin-top: 10px; }
+svg { display: block; width: 100%; height: auto; }
+.scrollx { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+.scrollx > svg { min-width: 540px; }
+.scrollx.arch > svg { min-width: 760px; }
+.dash { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 12px; margin: 10px 0 14px; }
+.dash .panel { padding: 14px 14px 10px; }
+.ex { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 12px; margin: 0 0 10px; }
+.ex-lbl { font: 600 11.5px/1.4 var(--sans); letter-spacing: .07em; text-transform: uppercase; color: var(--faint); margin: 0 0 6px; }
+.ex-pre { font: 12.5px/1.75 var(--mono); background: var(--code-bg); border: 1px solid var(--rule); border-radius: 10px; padding: 12px 14px; margin: 0 0 14px; overflow-x: auto; white-space: pre; }
+.ex-pre mark, .ex-q mark { color: inherit; border-radius: 3px; padding: 0 1px; }
+mark.mn { background: var(--c2-soft); box-shadow: inset 0 -2px 0 var(--c2); }
+mark.mv { background: var(--accent-soft); box-shadow: inset 0 -2px 0 var(--accent); }
+mark.mo { background: var(--warn-soft); box-shadow: inset 0 -2px 0 var(--warn); }
+.nul { color: var(--faint); }
+.ex-meta { display: flex; flex-wrap: wrap; gap: 6px 18px; font: 13px/1.5 var(--sans); color: var(--muted); background: var(--panel); border-radius: 10px; padding: 10px 14px; margin: 0 0 18px; }
+.ex-meta b { color: var(--fg); }
+.ex-q { font-size: 16.5px; line-height: 1.6; margin: 0 0 12px; padding: 12px 16px; border-left: 3px solid var(--rule); background: var(--card); border-radius: 0 10px 10px 0; }
+.ex-card { background: var(--card); border: 1px solid var(--rule); border-top: 3px solid var(--base); border-radius: 12px; padding: 12px 14px; }
+.ex-card.bad { border-top-color: var(--warn); }
+.ex-card.ok { border-top-color: var(--accent); }
+.ex-ans { display: block; font: 13px/1.55 var(--mono); background: none; padding: 0; margin: 4px 0 10px; overflow-wrap: anywhere; }
+.ex-foot { font: 12.5px/1.45 var(--sans); color: var(--muted); }
+.scrollhint { display: none; font-size: 12px; color: var(--muted); margin: 0 0 6px; }
+@media (max-width: 780px) { .scrollhint { display: block; } }
+.legend { display: flex; flex-wrap: wrap; gap: 14px; font: 12.5px/1.3 var(--sans); color: var(--muted); margin: 0 0 10px; }
+.legend i { display: inline-block; width: 12px; height: 12px; border-radius: 3px; vertical-align: -1px; margin-right: 6px; }
+.tablewrap { overflow-x: auto; margin: 0 0 8px; border: 1px solid var(--rule); border-radius: 10px; background: var(--card); }
+table { border-collapse: collapse; width: 100%; font: 14px/1.45 var(--sans); }
+th, td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--rule); vertical-align: top; }
+th { font-weight: 600; color: var(--muted); background: var(--panel); white-space: nowrap; }
+tr:last-child td { border-bottom: 0; }
+td { font-variant-numeric: tabular-nums; }
+td.n { white-space: nowrap; }
+.cap { font: 13.5px/1.55 var(--sans); color: var(--faint); margin: 8px 0 24px; }
+.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 10px; margin: 6px 0 24px; }
+.stat { background: var(--card); border: 1px solid var(--rule); border-radius: 12px; padding: 14px 16px 12px; }
+.stat .v { font: 700 26px/1.1 var(--sans); color: var(--accent); font-variant-numeric: tabular-nums; }
+.stat .l { font: 13px/1.4 var(--sans); color: var(--muted); margin-top: 6px; }
+.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; margin: 14px 0 26px; }
+.cardc { background: var(--card); border: 1px solid var(--rule); border-radius: 12px; padding: 14px 16px; font: 13.5px/1.5 var(--sans); color: var(--muted); }
+.cardc b { display: block; font-size: 14.5px; color: var(--fg); margin-bottom: 2px; }
+.cardc code { font-size: 11.5px; display: inline-block; margin: 2px 0 6px; }
+.cardc.k-core { border-top: 3px solid var(--c2); }
+.cardc.k-train { border-top: 3px solid var(--accent); }
+.cardc.k-gen { border-top: 3px solid var(--warn); }
+.cardc.k-io { border-top: 3px solid var(--base); }
+.diff { font: 13px/1.65 var(--mono); background: var(--code-bg); border: 1px solid var(--rule); border-radius: 10px; padding: 12px 16px; margin: 0 0 22px; overflow-x: auto; }
+.diff div { white-space: pre; }
+.diff .lbl { color: var(--faint); }
+.diff .bad { color: var(--warn); }
+.diff .ok { color: var(--accent); }
+.tldr { background: var(--card); border: 1px solid var(--rule); border-radius: 16px; padding: 26px 26px 10px; margin: 6px 0 30px; }
+.tldr .kicker { margin-bottom: 10px; }
+.tldr-lead { font-size: 20.5px; line-height: 1.5; margin-bottom: 8px; }
+.tldr-h { font: 700 13px/1.4 var(--sans); letter-spacing: .07em; text-transform: uppercase; color: var(--muted); margin: 26px 0 12px; }
+.pains { list-style: none; padding: 0; margin: 0; font-size: 17px; }
+.pains li { position: relative; padding-left: 22px; margin-bottom: 10px; }
+.pains li::before { content: ""; position: absolute; left: 2px; top: .62em; width: 8px; height: 8px; border-radius: 2px; background: var(--warn); }
+.inds { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 10px; }
+.ind { background: var(--panel); border-radius: 12px; padding: 14px 15px; font: 13.5px/1.5 var(--sans); display: flex; flex-direction: column; gap: 6px; }
+.ind b { font-size: 14.5px; }
+.ind .what { color: var(--muted); }
+.ind .risk { color: var(--warn); font-weight: 600; }
+.fixes { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 10px 20px; font: 14.5px/1.55 var(--sans); color: var(--muted); }
+.fixes div { border-left: 3px solid var(--accent); padding: 2px 0 2px 12px; }
+.fixes b { color: var(--fg); display: block; }
+.proof { margin-top: 22px; }
+.proof .stat { background: var(--accent-soft); border-color: transparent; }
+.honest { font: 14px/1.6 var(--sans); color: var(--muted); border-top: 1px solid var(--rule); padding-top: 14px; margin-top: 4px; }
+@media (max-width: 600px) { .tldr { padding: 20px 16px 6px; } .tldr-lead { font-size: 18.5px; } .fixes { grid-template-columns: 1fr; } }
+footer { border-top: 1px solid var(--rule); margin-top: 72px; padding: 26px 0 52px; font: 13.5px/1.65 var(--sans); color: var(--faint); }
+footer a { color: var(--muted); }
+/* SVG vocabulary */
+svg text { font-family: var(--sans); fill: var(--fg); }
+.t-title { font-size: 13.5px; font-weight: 600; }
+.t-sub { font-size: 11px; fill: var(--muted); }
+.t-band { font-size: 12px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+.t-edge { font-size: 10.5px; fill: var(--faint); }
+.t-axis { font-size: 11px; fill: var(--faint); }
+.t-val { font-size: 11.5px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.t-mono { font-family: var(--mono); }
+.b-io { fill: var(--panel); stroke: var(--base); stroke-width: 1.2; }
+.b-node { fill: var(--card); stroke: var(--rule); stroke-width: 1.2; }
+.b-core { fill: var(--c2-soft); stroke: var(--c2); stroke-width: 1.2; }
+.b-train { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 1.2; }
+.b-gen { fill: var(--warn-soft); stroke: var(--warn); stroke-width: 1.2; }
+.band-core { fill: none; stroke: var(--c2); stroke-width: 1.4; stroke-dasharray: 2 0; }
+.band-train { fill: none; stroke: var(--accent); stroke-width: 1.4; }
+.band-gen { fill: none; stroke: var(--warn); stroke-width: 1.4; }
+.band-rt { fill: var(--panel); stroke: var(--rule); }
+.e { stroke: var(--faint); stroke-width: 1.5; fill: none; }
+.e-train { stroke: var(--accent); stroke-width: 1.6; fill: none; }
+.e-gen { stroke: var(--warn); stroke-width: 1.6; fill: none; }
+.e-core { stroke: var(--c2); stroke-width: 1.6; fill: none; }
+.e-dash { stroke-dasharray: 5 4; }
+.grid { stroke: var(--rule); stroke-width: 1; }
+.bar-base { fill: var(--base); }
+.bar-acc { fill: var(--accent); }
+.bar-c2 { fill: var(--c2); }
+.c-acc { color: var(--accent); }
+.c-warn { color: var(--warn); }
+.c-c2 { color: var(--c2); }
+.c-faint { color: var(--faint); }
+@media (max-width: 600px) {
+  body { font-size: 17.5px; }
+  .dek { font-size: 19px; }
+  h2 { font-size: 25px; margin-top: 50px; }
+  .hero { padding-top: 40px; }
+  .toc { columns: 1; }
+  .navlinks a:not(.gh) { display: none; }
+  .panel { padding: 14px 12px 10px; }
+}
+</style>
+</head>
+<body>
+<header class="top">
+  <div class="bar">
+    <a class="brand" href="#">quotebound</a>
+    <span class="navlinks"><a href="#examples">Examples</a><a href="#architecture">Architecture</a><a href="#training">Training</a><a href="#latency">Latency</a><a class="gh" href="https://github.com/tanwargenairesearch/quotebound">GitHub ↗</a></span>
+  </div>
+</header>
+
+<main>
+<div class="wrap">
+<section class="hero">
+  <p class="kicker">Local AI · fine-tuning on your own Mac · open source</p>
+  <h1>Local AI fine-tuning, with a decoder that can only quote its input</h1>
+  <p class="dek">Fine-tune Qwen3.5 on your own Mac, natively in C++, with no cloud and no Python. Then JSON decoding whose quoted values must come from the input, an override log that marks where the model wanted to stray, and speculative decoding that changes no byte.</p>
+  <div class="byline">Mohit Tanwar · 20 October 2026 · Apache-2.0</div>
+  <div class="cta">
+    <a class="primary" href="https://github.com/tanwargenairesearch/quotebound">View on GitHub</a>
+    <a href="#examples">See real examples</a>
+    <a href="#architecture">See the architecture</a>
+  </div>
+  <div class="pillrow">
+    <span class="pill">Local AI</span><span class="pill">Fine-tuning</span><span class="pill">C++ on MLX</span><span class="pill">Qwen3.5 4B / 9B</span><span class="pill">LoRA</span><span class="pill">JSON Schema</span><span class="pill">Exact speculative decoding</span><span class="pill">Apple silicon</span>
+  </div>
+</section>
+
+<section class="tldr" id="tldr" aria-label="TL;DR">
+  <p class="kicker">TL;DR</p>
+  <p class="tldr-lead">Your model reads a document and fills in a form. It writes a figure that is <em>almost</em> what the page says. Nothing flags it, and it flows into a decision. <strong>quotebound makes that impossible to write</strong>: every extracted value is copied from the source, and every place the model wanted to stray is flagged for review.</p>
+
+  <h3 class="tldr-h">The extraction problem nobody budgets for</h3>
+  <ul class="pains">
+    <li><b>Models "improve" values.</b> They join wrapped text, complete truncated names, round numbers and drop digits. On our receipts test a well-trained model scored 95 F1 and still did all of this: 5 values that are not on the receipt, one with a digit dropped.</li>
+    <li><b>Valid JSON is not a correct value.</b> Schema-constrained decoding guarantees the shape of the answer, not where its values came from.</li>
+    <li><b>Reviewers can't tell which values to check.</b> Nothing marks the risky ones, so people re-read every document, and the savings from automation disappear.</li>
+    <li><b>Output that changes between runs fails an audit.</b> A speed-up, a batch size or a quantised model can quietly change the answer.</li>
+    <li><b>Sensitive documents can't go to a cloud API.</b> Payslips, medical letters and identity documents need to stay on your own hardware.</li>
+  </ul>
+
+  <h3 class="tldr-h">Where 0.99+ precision and recall is the bar</h3>
+  <div class="inds">
+    <div class="ind"><b>Lending &amp; credit</b><span class="what">Income, outgoings, balances and loan amounts from payslips, bank statements and case notes.</span><span class="risk">A wrong figure becomes a wrong credit decision.</span></div>
+    <div class="ind"><b>Insurance claims</b><span class="what">Policy numbers, dates, claimed amounts and line items from claim forms and invoices.</span><span class="risk">Overpayment, disputes, and missed exclusions.</span></div>
+    <div class="ind"><b>Healthcare administration</b><span class="what">Doses, lab values, dates and codes from clinical letters and referrals.</span><span class="risk">A plausible but invented value is a safety incident.</span></div>
+    <div class="ind"><b>Legal &amp; contracts</b><span class="what">Parties, dates, amounts and the exact wording of clauses.</span><span class="risk">A paraphrased clause is not the clause.</span></div>
+    <div class="ind"><b>Accounts payable</b><span class="what">Invoice and receipt totals, tax, and line items.</span><span class="risk">One dropped digit pays the wrong amount.</span></div>
+    <div class="ind"><b>KYC &amp; compliance</b><span class="what">Names, ID numbers and addresses from identity documents.</span><span class="risk">A "corrected" name slips past screening.</span></div>
+  </div>
+
+  <h3 class="tldr-h">What quotebound changes</h3>
+  <div class="fixes">
+    <div><b>No invented values.</b> A value marked as a quote can only be a stretch of the source, on word and number boundaries. The decoder enforces it, token by token.</div>
+    <div><b>Every departure flagged.</b> When the model wanted to write something else, the decoder logs it. Send only those values to a reviewer.</div>
+    <div><b>Same bytes, every run.</b> Speculative decoding makes it up to 3.2× faster and changes no byte of the output, so results reproduce for an audit.</div>
+    <div><b>Your data stays on your hardware.</b> Fine-tune and run Qwen3.5 on a Mac. The same constraint is available as a C library for your GPU servers.</div>
+  </div>
+
+  <div class="stats proof">
+    <div class="stat"><div class="v">1,045 / 1,045</div><div class="l">receipt values copied verbatim from the receipt</div></div>
+    <div class="stat"><div class="v">5 / 5</div><div class="l">values the model wanted to invent were flagged, and nothing else was</div></div>
+    <div class="stat"><div class="v">3.2×</div><div class="l">faster per receipt, with all 96 answers byte-identical</div></div>
+    <div class="stat"><div class="v">35 min</div><div class="l">to fine-tune Qwen3.5-4B on 727 receipts, in 13.5 GB on a Mac</div></div>
+  </div>
+  <p class="honest"><b>What it is not.</b> quotebound guarantees where a value comes from, not that the model picked the right one: on the receipts test, field F1 is 95.0 after one short fine-tune. Reaching 0.99+ depends on your data, your model and your review policy. quotebound removes invented values from that equation and shows you exactly which values to check.</p>
+</section>
+
+<nav class="toc" aria-label="Contents">
+  <b>Contents</b>
+  <a href="#problem"><span>1</span>Shape is not content</a>
+  <a href="#idea"><span>2</span>Bind quotes to the input</a>
+  <a href="#examples"><span>3</span>Three real inputs</a>
+  <a href="#architecture"><span>4</span>Architecture</a>
+  <a href="#constraint"><span>5</span>How the constraint works</a>
+  <a href="#overrides"><span>6</span>Overrides</a>
+  <a href="#exact"><span>7</span>Exact speculative decoding</a>
+  <a href="#training"><span>8</span>Fine-tuning Qwen3.5 locally</a>
+  <a href="#results"><span>9</span>Results on public data</a>
+  <a href="#latency"><span>10</span>Latency, input by input</a>
+  <a href="#limits"><span>11</span>Limits</a>
+  <a href="#try"><span>12</span>Try it</a>
+</nav>
+
+<h2 id="problem"><span class="num">01</span>Shape is not content</h2>
+<p>A common job for a small language model is to read free text and pull values out of it: the total on a receipt, the dates in a booking request, the figures in a case note. For some of these jobs a wrong value is far worse than a missing one. A total that is off by a digit, or a name the model "corrected", can flow into a decision unnoticed. A missing value at least gets noticed.</p>
+<p>Constrained decoding is the usual answer to "make the model's output valid", and it is a good one. Libraries and inference servers can hold a model to a JSON Schema or a grammar, so every answer parses and has the right fields. But a schema constrains the <em>shape</em> of the answer, not its <em>content</em>. Under a schema, <code>"total": "111,000"</code> and <code>"total": "111,900"</code> are equally valid strings. Nothing ties the value to the document it came from.</p>
+<p>A prompt that says "only copy values from the text" helps, but it is a request, not a guarantee. quotebound makes it a guarantee for the values that need one.</p>
+
+<h2 id="idea"><span class="num">02</span>Bind quotes to the input</h2>
+<p>In quotebound's schemas, some strings are <strong>quotes</strong>. A string is a quote when its key is named <code>quote</code>, or when it is a <code>$ref</code> to a definition named <code>quote</code>. With <code>--quote-source user</code>, the decoder lets the model write a quote only if it is a stretch of the user's message. The model still chooses which stretch, where it starts and where it stops. What it cannot do is write a quote that is not there.</p>
+<pre><code>{
+  "type": "object", "additionalProperties": false,
+  "required": ["items", "total"],
+  "properties": {
+    "items": {"type": "array", "items": {
+      "type": "object", "additionalProperties": false, "required": ["name", "price"],
+      "properties": {"name": {"$ref": "#/$defs/quote"}, "price": {"$ref": "#/$defs/maybe"}}}},
+    "total": {"$ref": "#/$defs/maybe"}
+  },
+  "$defs": {
+    "quote": {"type": "string", "minLength": 1, "maxLength": 80},
+    "maybe": {"anyOf": [{"$ref": "#/$defs/quote"}, {"type": "null"}]}
+  }
+}</code></pre>
+<p>A quote also has to <strong>stand alone</strong>: it cannot start or end inside a word, so <code>"utdoor"</code> cannot be cut from <code>outdoor</code>. A number cannot be cut out of a wider one, so <code>"2"</code> cannot come from <code>2.00</code>, <code>"000"</code> cannot come from <code>60.000</code>, and <code>"33"</code> cannot come from <code>33%</code>. Quotes have no white space at either end. ASCII letter case is ignored when matching, so a quote may differ from the source in case, and only in case.</p>
+<div class="callout"><p>The guarantee is narrow and exact: every quote is a stretch of the input that stands alone. It does not promise that the model picked the <em>right</em> stretch. That is what training and evaluation are for, and what the override log helps with.</p></div>
+</div>
+
+<div class="wrap">
+<h2 id="examples"><span class="num">03</span>Three real inputs, end to end</h2>
+<p>Each example below is one row of the recipe runs, as the decoder wrote it: the input the model saw, the answer, and the record beside it. Nothing is retouched: the JSON is indented here, where the decoder writes it compact, and a long row is cut with <code>…</code>.</p>
+
+<h3>A · A receipt: every value is a stretch of the receipt</h3>
+<p class="cap" style="margin-top:0">CORD v2 test receipt <code>test-4</code>, LoRA adapter, constrained. System prompt: <em>“Read the receipt and return its items and totals as JSON. Copy every value exactly as the receipt prints it, and use null for a value the receipt does not show.”</em></p>
+<div class="ex">
+  <div><div class="ex-lbl">Input: the user turn</div><pre class="ex-pre">Receipt:
+<mark class="mn">ICE BLACKCOFFE</mark> <mark class="mv">2</mark> <mark class="mv">82,000</mark>
+<mark class="mn">AVOCADO COFFEE</mark> <mark class="mv">1</mark> <mark class="mv">61,000</mark>
+<mark class="mn">CHIKEN KATSU FF</mark> <mark class="mv">1</mark> <mark class="mv">51,000</mark>
+SUB_TOTAL <mark class="mv">194,000</mark>
+DISCOUNT <mark class="mv">19,400</mark>
+TOTAL <mark class="mv">174,600</mark>
+CASH <mark class="mv">200,000</mark>
+CHANGE <mark class="mv">25,400</mark></pre></div>
+  <div><div class="ex-lbl">Output: the answer</div><pre class="ex-pre">{
+  "items": [
+    { "name": "<mark class="mn">ICE BLACKCOFFE</mark>",
+      "count": "<mark class="mv">2</mark>", "price": "<mark class="mv">82,000</mark>" },
+    { "name": "<mark class="mn">AVOCADO COFFEE</mark>",
+      "count": "<mark class="mv">1</mark>", "price": "<mark class="mv">61,000</mark>" },
+    { "name": "<mark class="mn">CHIKEN KATSU FF</mark>",
+      "count": "<mark class="mv">1</mark>", "price": "<mark class="mv">51,000</mark>" }
+  ],
+  "subtotal": "<mark class="mv">194,000</mark>",
+  "tax": <span class="nul">null</span>,
+  "service": <span class="nul">null</span>,
+  "discount": "<mark class="mv">19,400</mark>",
+  "total": "<mark class="mv">174,600</mark>",
+  "cash": "<mark class="mv">200,000</mark>",
+  "change": "<mark class="mv">25,400</mark>",
+  "card": <span class="nul">null</span>
+}</pre></div>
+</div>
+<div class="legend"><span><i style="background:var(--c2-soft);border:1px solid var(--c2)"></i>item names</span><span><i style="background:var(--accent-soft);border:1px solid var(--accent)"></i>counts and amounts</span><span><i style="background:var(--panel);border:1px solid var(--faint)"></i>null: not on the receipt</span></div>
+<div class="ex-meta"><span><b>14</b> values, all quoted</span><span><b>3</b> nulls</span><span><b>0</b> overrides</span><span>prompt <b>151</b> tokens · answer <b>130</b></span><span>plain <b>5.57 s</b> → exact drafts <b>1.71 s</b>, same bytes</span></div>
+<p>The model chose every value, and the decoder checked each byte against the receipt as it went. It never had to step in: the model's own top token was allowed at all 130 steps. It also chose <code>null</code> for the 3 fields this receipt does not print, which the schema allows. The answer matches the dataset's reference exactly.</p>
+
+<h3>B · The override a caller receives</h3>
+<p class="cap" style="margin-top:0">CORD v2 test receipt <code>test-59</code>, the same adapter. The receipt line, then what the model and the decoder did with it.</p>
+<div class="diff" role="figure" aria-label="The digit-dropped case">
+<div><span class="lbl">receipt line          </span>1 Kepiting 7-8.4ons - Chilly 0.7 297,490</div>
+<div><span class="lbl">no constraint wrote   </span><span class="bad">"Kepiting 7-8.ons - Chilly"</span><span class="lbl">   the 4 is gone</span></div>
+<div><span class="lbl">constrained, wrote    </span><span class="ok">"Kepiting 7-8.4ons - Chilly"</span><span class="lbl">  as printed</span></div>
+</div>
+<p>At step 49, the model's top token would have skipped the <code>4</code>, as the unconstrained run did. That would have made a name the receipt does not print. The decoder took the best token that keeps the quote on the receipt, and wrote down where it did so:</p>
+<pre class="ex-pre">{"id": "test-59",
+ "text": "…{\&quot;name\&quot;:\&quot;Kepiting 7-8.<mark class="mo">4</mark>ons - Chilly\&quot;,\&quot;count\&quot;:\&quot;1\&quot;,\&quot;price\&quot;:\&quot;297,490\&quot;}…",
+ "overridden": [[125, 126]],
+ "overridden_steps": [49],
+ "prompt_tokens": 226, "gen_tokens": 248,
+ "total_ms": 4205.8, "passes": 69, …}</pre>
+<p>Byte 125 of the answer is that <code>4</code>. A pipeline can now set a simple policy: accept a value when no override touches it, and send it to a person when one does. On this receipt that accepts 29 of 30 values and routes one item name for review. Across all 96 test receipts, the same policy routes exactly the 5 values that the unconstrained run wrote off the receipt, and nothing else.</p>
+
+<h3>C · A question: base model against fine-tuned adapter</h3>
+<p class="cap" style="margin-top:0">SQuAD v1.1 dev question <code>5726d993…</code>, constrained in both runs. The passage’s first two sentences (Wikipedia, CC BY-SA 4.0):</p>
+<blockquote class="ex-q"><mark class="mo">Pharmacists are healthcare professionals with specialised education and training who perform various roles to ensure optimal health outcomes for their patients through the quality use of medicines.</mark> Pharmacists may also be <mark class="mn">small-business proprietors</mark>, owning the pharmacy in which they practice.</blockquote>
+<p class="cap" style="margin:-6px 0 12px"><b>Question:</b> What other role do many pharmacists play?</p>
+<div class="ex">
+  <div class="ex-card bad"><div class="ex-lbl">Base Qwen3.5-4B</div><code class="ex-ans">&quot;:\nPharmacists are healthcare professionals with specialised education and training who perform various roles to ensure optimal health outcomes for their patients through the quality use of medicines.&quot;</code><div class="ex-foot"><b>6</b> overrides, at steps 3, 4, 5, 6, 9, 36 · 1.93 s · wrong</div></div>
+  <div class="ex-card ok"><div class="ex-lbl">After LoRA (43 minutes on SQuAD)</div><code class="ex-ans">&quot;small-business proprietors&quot;</code><div class="ex-foot"><b>0</b> overrides · 0.56 s · right</div></div>
+</div>
+<p>Both answers are stretches of the input, because the constraint allows nothing else. The base model was never taught the task: it fought the format, was overridden 6 times, and ended up copying the opening sentence. Those overrides are the flag that something is off. The adapter picks the stretch that answers the question, in 9 tokens, with no overrides. That split is the design: training teaches the model <em>which</em> stretch, and the decoder makes sure it <em>is</em> one.</p>
+</div>
+
+<div class="wide">
+<h2 id="architecture" style="max-width:728px;margin-left:auto;margin-right:auto"><span class="num">04</span>Architecture</h2>
+<p style="max-width:728px;margin-left:auto;margin-right:auto">quotebound is one C++ binary with two commands, <code>train</code> and <code>generate</code>. Both share a tokenizer and a model. Everything runs on MLX's C++ API and Metal, and nothing runs in Python. The schema constraint is also built as a separate C library, so other decoders can use it.</p>
+<figure>
+<div class="panel">
+<h4>The components and how they connect</h4>
+<p class="sub">Inputs on the left, outputs on the right. Blue is shared, green is training, orange is generation.</p>
+<p class="scrollhint">Swipe sideways to see the whole diagram.</p>
+<div class="scrollx arch">
+<svg viewBox="0 0 1000 812" role="img" aria-label="quotebound architecture: inputs feed a training band and a generation band, both using a shared tokenizer and model, on MLX and Metal; outputs are a LoRA adapter, answers JSONL and a C constraint library">
+  <defs>
+    <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="context-stroke"/></marker>
+  </defs>
+  <!-- column headers -->
+  <text class="t-band" x="96" y="18" text-anchor="middle" style="fill:var(--faint)">Inputs</text>
+  <text class="t-band" x="508" y="18" text-anchor="middle" style="fill:var(--faint)">quotebound · one C++ binary</text>
+  <text class="t-band" x="912" y="18" text-anchor="middle" style="fill:var(--faint)">Outputs</text>
+
+  <!-- TRAIN band -->
+  <rect class="band-train" x="200" y="30" width="616" height="182" rx="14"/>
+  <text class="t-band" x="216" y="54" style="fill:var(--accent)">quotebound train</text>
+  <rect class="b-train" x="212" y="72" width="104" height="66" rx="9"/>
+  <text class="t-title" x="264" y="100" text-anchor="middle">Data + batches</text>
+  <text class="t-sub" x="264" y="118" text-anchor="middle">token-budget plans</text>
+  <rect class="b-train" x="334" y="72" width="104" height="66" rx="9"/>
+  <text class="t-title" x="386" y="100" text-anchor="middle">Forward</text>
+  <text class="t-sub" x="386" y="118" text-anchor="middle">layer checkpoints</text>
+  <rect class="b-train" x="456" y="72" width="104" height="66" rx="9"/>
+  <text class="t-title" x="508" y="100" text-anchor="middle">Loss</text>
+  <text class="t-sub" x="508" y="118" text-anchor="middle">chunked logits</text>
+  <rect class="b-train" x="578" y="72" width="104" height="66" rx="9"/>
+  <text class="t-title" x="630" y="100" text-anchor="middle">Backward</text>
+  <text class="t-sub" x="630" y="118" text-anchor="middle">DeltaNet kernel</text>
+  <rect class="b-train" x="700" y="72" width="104" height="66" rx="9"/>
+  <text class="t-title" x="752" y="100" text-anchor="middle">AdamW</text>
+  <text class="t-sub" x="752" y="118" text-anchor="middle">clip · cosine LR</text>
+  <path class="e-train" d="M316 105 H332" marker-end="url(#ah)"/>
+  <path class="e-train" d="M438 105 H454" marker-end="url(#ah)"/>
+  <path class="e-train" d="M560 105 H576" marker-end="url(#ah)"/>
+  <path class="e-train" d="M682 105 H698" marker-end="url(#ah)"/>
+  <path class="e-train e-dash" d="M752 138 V156 H386 V140" marker-end="url(#ah)"/>
+  <text class="t-edge" x="569" y="170" text-anchor="middle">next step: updated LoRA weights</text>
+  <text class="t-sub" x="508" y="198" text-anchor="middle">dev loss + sample answers each evaluation · checkpoints that resume bit for bit</text>
+
+  <!-- CORE band -->
+  <rect class="band-core" x="200" y="250" width="616" height="104" rx="14"/>
+  <text class="t-band" x="216" y="270" style="fill:var(--c2)">shared core</text>
+  <rect class="b-core" x="212" y="280" width="180" height="62" rx="9"/>
+  <text class="t-title" x="302" y="305" text-anchor="middle">Tokenizer</text>
+  <text class="t-sub" x="302" y="323" text-anchor="middle">byte-level BPE · chat templates</text>
+  <rect class="b-core" x="408" y="280" width="396" height="62" rx="9"/>
+  <text class="t-title" x="606" y="301" text-anchor="middle">Model: Qwen3 / Qwen3.5</text>
+  <text class="t-sub" x="606" y="317" text-anchor="middle">full attention + Gated DeltaNet layers · KV cache</text>
+  <text class="t-sub" x="606" y="333" text-anchor="middle">LoRA on every projection, unmerged, float32</text>
+
+  <!-- train <-> core -->
+  <path class="e-core" d="M508 212 V248" marker-start="url(#ah)" marker-end="url(#ah)"/>
+  <text class="t-edge" x="518" y="234">tokens · forward · gradients</text>
+
+  <!-- GENERATE band -->
+  <rect class="band-gen" x="200" y="392" width="616" height="262" rx="14"/>
+  <text class="t-band" x="216" y="416" style="fill:var(--warn)">quotebound generate</text>
+  <rect class="b-gen" x="212" y="432" width="120" height="62" rx="9"/>
+  <text class="t-title" x="272" y="457" text-anchor="middle">Prefill</text>
+  <text class="t-sub" x="272" y="475" text-anchor="middle">2,048-token chunks</text>
+  <rect class="b-gen" x="350" y="432" width="146" height="62" rx="9"/>
+  <text class="t-title" x="423" y="457" text-anchor="middle">Decode step</text>
+  <text class="t-sub" x="423" y="475" text-anchor="middle">logits, all 248k tokens</text>
+  <rect class="b-gen" x="514" y="432" width="136" height="62" rx="9"/>
+  <text class="t-title" x="582" y="457" text-anchor="middle">Masked argmax</text>
+  <text class="t-sub" x="582" y="475" text-anchor="middle">model's own top kept</text>
+  <rect class="b-gen" x="668" y="432" width="136" height="62" rx="9"/>
+  <text class="t-title" x="736" y="457" text-anchor="middle">Override log</text>
+  <text class="t-sub" x="736" y="475" text-anchor="middle">spans the mask forced</text>
+  <path class="e-gen" d="M332 463 H348" marker-end="url(#ah)"/>
+  <path class="e-gen" d="M496 463 H512" marker-end="url(#ah)"/>
+  <path class="e-gen" d="M650 463 H666" marker-end="url(#ah)"/>
+  <path class="e-gen e-dash" d="M582 432 V422 H423 V430" marker-end="url(#ah)"/>
+  <text class="t-edge" x="502" y="417" text-anchor="middle">next token</text>
+
+  <!-- exact drafts group -->
+  <rect class="b-node" x="212" y="520" width="284" height="120" rx="11"/>
+  <text class="t-title" x="226" y="542">Exact drafts</text>
+  <rect class="b-gen" x="224" y="556" width="122" height="70" rx="9"/>
+  <text class="t-title" x="285" y="584" text-anchor="middle">Draft sources</text>
+  <text class="t-sub" x="285" y="602" text-anchor="middle">prompt lookup</text>
+  <text class="t-sub" x="285" y="616" text-anchor="middle">training n-grams</text>
+  <rect class="b-gen" x="362" y="556" width="122" height="70" rx="9"/>
+  <text class="t-title" x="423" y="584" text-anchor="middle">Verify pass</text>
+  <text class="t-sub" x="423" y="602" text-anchor="middle">exact GEMV rows</text>
+  <text class="t-sub" x="423" y="616" text-anchor="middle">roll back on miss</text>
+  <path class="e-gen" d="M346 591 H360" marker-end="url(#ah)"/>
+  <path class="e-gen" d="M423 554 V496" marker-start="url(#ah)" marker-end="url(#ah)"/>
+  <text class="t-edge" x="430" y="512">k tokens a pass</text>
+
+  <!-- constraint engine group -->
+  <rect class="b-node" x="514" y="520" width="290" height="120" rx="11"/>
+  <text class="t-title" x="528" y="542">Constraint engine</text>
+  <rect class="b-gen" x="524" y="556" width="88" height="70" rx="9"/>
+  <text class="t-title" x="568" y="584" text-anchor="middle">Schema</text>
+  <text class="t-sub" x="568" y="602" text-anchor="middle">byte automaton</text>
+  <rect class="b-gen" x="616" y="556" width="88" height="70" rx="9"/>
+  <text class="t-title" x="660" y="584" text-anchor="middle">Token trie</text>
+  <text class="t-sub" x="660" y="602" text-anchor="middle">every token's</text>
+  <text class="t-sub" x="660" y="616" text-anchor="middle">bytes</text>
+  <rect class="b-gen" x="708" y="556" width="88" height="70" rx="9"/>
+  <text class="t-title" x="752" y="584" text-anchor="middle">Quote index</text>
+  <text class="t-sub" x="752" y="602" text-anchor="middle">suffix array</text>
+  <text class="t-sub" x="752" y="616" text-anchor="middle">of the message</text>
+  <path class="e-gen" d="M582 520 V496" marker-end="url(#ah)"/>
+  <text class="t-edge" x="590" y="512">allowed set</text>
+
+  <!-- core <-> generate -->
+  <path class="e-core" d="M680 354 V390" marker-start="url(#ah)" marker-end="url(#ah)"/>
+  <text class="t-edge" x="690" y="376">prompt tokens · logits</text>
+  <path class="e-core" d="M272 354 V430" marker-end="url(#ah)"/>
+  <text class="t-edge" x="280" y="376">prompt ids</text>
+
+  <!-- INPUTS -->
+  <rect class="b-io" x="16" y="72" width="160" height="66" rx="9"/>
+  <text class="t-title" x="96" y="100" text-anchor="middle">Training data</text>
+  <text class="t-sub" x="96" y="118" text-anchor="middle">JSONL chat turns</text>
+  <path class="e" d="M176 105 H210" marker-end="url(#ah)"/>
+
+  <rect class="b-io" x="16" y="270" width="160" height="82" rx="9"/>
+  <text class="t-title" x="96" y="296" text-anchor="middle">Checkpoint</text>
+  <text class="t-sub" x="96" y="314" text-anchor="middle">bf16 safetensors</text>
+  <text class="t-sub" x="96" y="330" text-anchor="middle">tokenizer.json · template</text>
+  <path class="e" d="M176 311 H210" marker-end="url(#ah)"/>
+
+  <rect class="b-io" x="16" y="432" width="160" height="62" rx="9"/>
+  <text class="t-title" x="96" y="457" text-anchor="middle">Messages</text>
+  <text class="t-sub" x="96" y="475" text-anchor="middle">one prompt or a batch</text>
+  <path class="e" d="M176 463 H210" marker-end="url(#ah)"/>
+
+  <rect class="b-io" x="16" y="664" width="160" height="62" rx="9"/>
+  <text class="t-title" x="96" y="689" text-anchor="middle">JSON Schema</text>
+  <text class="t-sub" x="96" y="707" text-anchor="middle">with quote definitions</text>
+  <path class="e" d="M176 695 H660 V642" marker-end="url(#ah)"/>
+
+  <!-- OUTPUTS -->
+  <rect class="b-io" x="840" y="72" width="144" height="66" rx="9"/>
+  <text class="t-title" x="912" y="98" text-anchor="middle">LoRA adapter</text>
+  <text class="t-sub" x="912" y="116" text-anchor="middle">+ base-model identity</text>
+  <path class="e" d="M816 105 H838" marker-end="url(#ah)"/>
+  <path class="e e-dash" d="M912 138 V311 H806" marker-end="url(#ah)"/>
+  <text class="t-edge" x="920" y="232">--adapter</text>
+
+  <rect class="b-io" x="840" y="432" width="144" height="82" rx="9"/>
+  <text class="t-title" x="912" y="456" text-anchor="middle">Answers JSONL</text>
+  <text class="t-sub" x="912" y="474" text-anchor="middle">text · overrides</text>
+  <text class="t-sub" x="912" y="490" text-anchor="middle">confidences · timings</text>
+  <path class="e" d="M804 463 H838" marker-end="url(#ah)"/>
+
+  <rect class="b-io" x="840" y="556" width="144" height="82" rx="9"/>
+  <text class="t-title" x="912" y="580" text-anchor="middle">C library</text>
+  <text class="t-sub" x="912" y="598" text-anchor="middle">the same constraint</text>
+  <text class="t-sub" x="912" y="614" text-anchor="middle">for CUDA / CPU decoders</text>
+  <path class="e e-dash" d="M804 591 H838" marker-end="url(#ah)"/>
+
+  <!-- RUNTIME -->
+  <rect class="band-rt" x="200" y="744" width="452" height="50" rx="10"/>
+  <text class="t-title" x="426" y="766" text-anchor="middle">MLX C++ API · Metal kernels</text>
+  <text class="t-sub" x="426" y="783" text-anchor="middle">unified memory on Apple silicon</text>
+  <rect class="band-rt" x="666" y="744" width="150" height="50" rx="10"/>
+  <text class="t-title" x="741" y="766" text-anchor="middle">simdjson</text>
+  <text class="t-sub" x="741" y="783" text-anchor="middle">JSON and schemas</text>
+  <text class="t-edge" x="508" y="732" text-anchor="middle">everything above runs on</text>
+  <rect class="band-rt" x="840" y="744" width="144" height="50" rx="10"/>
+  <text class="t-title" x="912" y="766" text-anchor="middle">Deny-list</text>
+  <text class="t-sub" x="912" y="783" text-anchor="middle">on every file path</text>
+</svg>
+</div>
+</div>
+<figcaption>Reading the diagram: training turns chat data into a LoRA adapter by running the shared model forward and back. Generation loads the same model (and optionally the adapter), decodes greedily, and asks the constraint engine at every step which tokens may come next.</figcaption>
+</figure>
+
+<div class="cards" style="max-width:1008px">
+  <div class="cardc k-core"><b>Tokenizer</b><code>src/unicode · pretokenize · tokenizer</code><br>Byte-level BPE with Qwen's split patterns and chat templates. Its output is checked token for token against Hugging Face <code>tokenizers</code>.</div>
+  <div class="cardc k-core"><b>Model</b><code>src/model · deltanet</code><br>The Qwen3 and Qwen3.5 forward pass: attention, Gated DeltaNet, KV cache and the LoRA path. Checked against mlx-lm on real checkpoints.</div>
+  <div class="cardc k-train"><b>Trainer</b><code>src/data · loss · delta_grad · lora · adamw · train</code><br>Batch plans, chunked loss, a custom gradient for the recurrence, AdamW, and checkpoints with exact resume.</div>
+  <div class="cardc k-gen"><b>Decoder</b><code>src/generate · batch</code><br>Prefill and greedy decoding, one prompt or a batch file, with resume, timings and confidences.</div>
+  <div class="cardc k-gen"><b>Constraint engine</b><code>src/schema · constrain</code><br>Compiles the schema to a byte automaton, walks the token trie, and binds quotes through the suffix array.</div>
+  <div class="cardc k-gen"><b>Exact drafts</b><code>src/draft · exact</code><br>Free draft tokens, and a verify pass whose every row rounds exactly like a one-token step.</div>
+  <div class="cardc k-io"><b>C library</b><code>src/constrain_capi</code><br>The constraint behind a C interface with no MLX, built for macOS or Linux.</div>
+  <div class="cardc k-io"><b>Files and provenance</b><code>src/files.h · provenance</code><br>Synced writes and the deny-list. Adapters record the checkpoint they were trained on and refuse any other.</div>
+</div>
+</div>
+
+<div class="wrap">
+<h2 id="constraint"><span class="num">05</span>How the constraint works</h2>
+<p>At every decoding step the decoder asks one question: which tokens may come next? It takes the model's argmax over those tokens only. An answer the model would have written validly anyway comes out the same, token for token. Three structures answer the question together.</p>
+
+<figure>
+<div class="panel">
+<h4>One decoding step</h4>
+<p class="sub">The CPU chooses the allowed set while the GPU runs the model.</p>
+<p class="scrollhint">Swipe sideways to see the whole diagram.</p>
+<div class="scrollx">
+<svg viewBox="0 0 720 286" role="img" aria-label="One decoding step: the model's logits and the allowed set meet in a masked argmax, which writes the next token and logs an override when it differs from the model's own top choice">
+  <defs><marker id="ah2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="context-stroke"/></marker></defs>
+  <rect class="b-core" x="10" y="24" width="170" height="60" rx="9"/>
+  <text class="t-title" x="95" y="50" text-anchor="middle">Model forward</text>
+  <text class="t-sub" x="95" y="68" text-anchor="middle">logits over 248k tokens</text>
+  <rect class="b-node" x="10" y="122" width="400" height="152" rx="11"/>
+  <text class="t-title" x="24" y="144">Allowed set (CPU)</text>
+  <rect class="b-gen" x="22" y="158" width="120" height="102" rx="9"/>
+  <text class="t-title" x="82" y="186" text-anchor="middle">Schema</text>
+  <text class="t-sub" x="82" y="204" text-anchor="middle">state of the</text>
+  <text class="t-sub" x="82" y="218" text-anchor="middle">byte automaton</text>
+  <text class="t-sub" x="82" y="240" text-anchor="middle">keys, enums, lengths</text>
+  <rect class="b-gen" x="150" y="158" width="120" height="102" rx="9"/>
+  <text class="t-title" x="210" y="186" text-anchor="middle">Token trie</text>
+  <text class="t-sub" x="210" y="204" text-anchor="middle">walk from the state,</text>
+  <text class="t-sub" x="210" y="218" text-anchor="middle">prune refused bytes</text>
+  <text class="t-sub" x="210" y="240" text-anchor="middle">~0.015 ms a step</text>
+  <rect class="b-gen" x="278" y="158" width="120" height="102" rx="9"/>
+  <text class="t-title" x="338" y="186" text-anchor="middle">Quote index</text>
+  <text class="t-sub" x="338" y="204" text-anchor="middle">inside a quote:</text>
+  <text class="t-sub" x="338" y="218" text-anchor="middle">must stay a stretch</text>
+  <text class="t-sub" x="338" y="240" text-anchor="middle">of the message</text>
+  <path class="e" d="M142 209 H148" />
+  <path class="e" d="M270 209 H276" />
+  <rect class="b-gen" x="470" y="24" width="140" height="60" rx="9"/>
+  <text class="t-title" x="540" y="50" text-anchor="middle">Masked argmax</text>
+  <text class="t-sub" x="540" y="68" text-anchor="middle">the next token</text>
+  <path class="e-core" d="M180 54 H468" marker-end="url(#ah2)"/>
+  <text class="t-edge" x="324" y="46" text-anchor="middle">logits</text>
+  <path class="e-gen" d="M410 198 H540 V86" marker-end="url(#ah2)"/>
+  <text class="t-edge" x="476" y="190" text-anchor="middle">allowed ids</text>
+  <rect class="b-io" x="470" y="122" width="140" height="44" rx="9"/>
+  <text class="t-title" x="540" y="149" text-anchor="middle">Answer bytes</text>
+  <path class="e" d="M610 54 H650 V144 H612" marker-end="url(#ah2)"/>
+  <rect class="b-gen" x="630" y="212" width="84" height="62" rx="9"/>
+  <text class="t-title" x="672" y="236" text-anchor="middle">Override</text>
+  <text class="t-sub" x="672" y="254" text-anchor="middle">if ≠ model top</text>
+  <path class="e e-dash" d="M672 66 V210" marker-end="url(#ah2)"/>
+  <path class="e e-dash" d="M470 144 H420 V124" marker-end="url(#ah2)"/>
+  <text class="t-edge" x="424" y="112">advances the state</text>
+</svg>
+</div>
+</div>
+<figcaption>The full-vocabulary argmax is kept beside each step, so the decoder can tell when the constraint changed the model's choice. That is an override.</figcaption>
+</figure>
+
+<h3>The schema as a byte automaton</h3>
+<p>The schema compiles to a pushdown automaton over the <em>bytes</em> of compact JSON, the form <code>json.dumps(v, ensure_ascii=False, separators=(",", ":"))</code> writes. A state is a small set of configurations, one per live <code>anyOf</code> alternative, each a stack of open values. The automaton tracks:</p>
+<ul>
+  <li>which keys an object has written, so required keys come before it closes and no key repeats;</li>
+  <li>enums and consts, array lengths, and unique items;</li>
+  <li>string lengths in code points, and a pattern's character class;</li>
+  <li>numbers within a fixed number of digits, so they read back finite.</li>
+</ul>
+<p>Every schema keyword that is read is listed in <code>src/schema.h</code>. Any other keyword is refused by name, with its location, so a schema never quietly means less than it says.</p>
+
+<h3>The vocabulary as a trie</h3>
+<p>Every token's bytes go into one trie: about 248,000 tokens and 590,000 nodes for Qwen3.5, built in about 50 ms. To find the allowed tokens, the decoder walks the trie from the automaton's current state and prunes every subtree whose bytes the automaton refuses. Free strings are the expensive case, because almost every token is legal inside one. For those, a table is precomputed once per character class: which tokens stay inside the string, and what each leaves pending. In the test suite this makes a free-string step take 0.44 ms instead of the walk's 5.96 ms. Averaged over a structured answer, choosing the allowed set takes about 0.015 ms a step.</p>
+
+<h3>The budget</h3>
+<p>The automaton knows the fewest bytes that close the answer from any state. A token is allowed only if the answer can still be closed, and stopped, within the remaining token budget. So an answer that runs long is closed by the shortest valid path instead of being cut off mid-string. A stop token is allowed only once the JSON is complete.</p>
+
+<h3>Quotes: a suffix array, narrowed byte by byte</h3>
+<p>The message is written as a JSON string body, with ASCII letters lower-cased. Every byte offset where a quote may <em>start</em> is collected, meaning an offset that does not split a word or a number. These offsets are sorted by the bytes that follow them: a suffix array. Two side tables record where a quote may <em>end</em>.</p>
+<p>A quote in progress is then just a range <code>[lo, hi)</code> of that sorted array: the start offsets whose text begins with the bytes written so far. Each new byte narrows the range with two binary searches. A byte is allowed only if:</p>
+<ul>
+  <li>the range stays non-empty;</li>
+  <li>some start in it can still reach a valid end within the string's <code>maxLength</code>.</li>
+</ul>
+<p>The closing quote mark is allowed only where one of the starts ends on a boundary.</p>
+
+<figure>
+<div class="panel">
+<h4>Writing <code>"111,000"</code> as a quote</h4>
+<p class="sub">Each byte keeps only the places in the message where the quote could have come from.</p>
+<p class="scrollhint">Swipe sideways to see the whole diagram.</p>
+<div class="scrollx">
+<svg viewBox="0 0 720 236" role="img" aria-label="Suffix array narrowing: the range of candidate starts shrinks as the quote is written">
+  <rect class="b-io" x="10" y="10" width="700" height="40" rx="8"/>
+  <text class="t-mono" x="24" y="35" style="font-size:12.5px">subtotal 100,909⏎pb1 (10%) 10,091⏎total 111,000⏎cash rp. 111,000</text>
+  <text class="t-axis" x="10" y="80">written so far</text>
+  <text class="t-axis" x="170" y="80">candidate starts (a range of the sorted array)</text>
+  <text class="t-mono" x="10" y="112" style="font-size:13px">"1</text>
+  <rect class="b-gen" x="170" y="96" width="380" height="24" rx="5"/>
+  <text class="t-sub" x="562" y="112">every start that begins with 1</text>
+  <text class="t-mono" x="10" y="150" style="font-size:13px">"11</text>
+  <rect class="b-gen" x="170" y="134" width="150" height="24" rx="5"/>
+  <text class="t-sub" x="562" y="150">the two 111,000</text>
+  <text class="t-mono" x="10" y="188" style="font-size:13px">"111,000"</text>
+  <rect class="b-train" x="170" y="172" width="150" height="24" rx="5"/>
+  <text class="t-sub" x="562" y="188">ends on a boundary: may close</text>
+  <text class="t-edge" x="10" y="226">The 909 inside 100,909 is never a start: a quote cannot begin inside a wider number.</text>
+</svg>
+</div>
+</div>
+</figure>
+<p>Because the check runs on bytes, it does not matter how the tokenizer splits the quote. Any token whose bytes keep the range alive is allowed, wherever its boundaries fall.</p>
+
+<h3>The same rule outside the Mac</h3>
+<p>The constraint does not depend on MLX. <code>make constrain-lib</code> builds it as a small C library, <code>libquotebound_constrain</code>. It also builds on Linux. A decoder written for another runtime, a CUDA server for example, can then mask its logits with exactly the tokens quotebound allows. Two decoders that share it can differ only in the model's arithmetic, never in what an answer may be.</p>
+
+<h2 id="overrides"><span class="num">06</span>Overrides: where the model wanted to stray</h2>
+<p>The decoder keeps each step's unconstrained argmax as well. When the constrained choice differs, it records an <strong>override</strong>: the step, and the byte span of the answer that the decoder, not the model, chose. The argmaxes are queued beside the steps and read at the end, so recording costs the decoder no extra wait.</p>
+<p>An override is a precise, free signal: here, the model wanted to write something the input does not support. The receipts recipe shows how precise. We ran the same fine-tuned adapter on 96 test receipts twice, with the constraint and without it:</p>
+<ul>
+  <li><strong>Without the constraint</strong>, it wrote 5 values that are not on the receipt.</li>
+  <li><strong>With the constraint</strong>, it was overridden at 5 steps, in 4 answers. These were the same 4 receipts and the same 5 values.</li>
+</ul>
+
+<figure>
+<div class="panel">
+<h4>Five values off the receipt, five overrides, matched one to one</h4>
+<p class="sub">The same adapter on 96 CORD test receipts. Top row: constraint off. Bottom row: constraint on.</p>
+<p class="scrollhint">Swipe sideways to see the whole diagram.</p>
+<div class="scrollx">
+<svg viewBox="0 0 640 196" role="img" aria-label="Five unconstrained values not on the receipt, each matched to an override in the constrained run">
+  <text class="t-axis" x="16" y="18">constraint off: written, but not on the receipt</text>
+  <g>
+    <rect class="b-gen" x="16" y="28" width="112" height="34" rx="7"/><text class="t-mono" x="72" y="50" text-anchor="middle" style="font-size:11px">Porsi Besar</text>
+    <rect class="b-gen" x="140" y="28" width="112" height="34" rx="7"/><text class="t-mono" x="196" y="50" text-anchor="middle" style="font-size:11px">…Marmer,Daging…</text>
+    <rect class="b-gen" x="264" y="28" width="112" height="34" rx="7"/><text class="t-mono" x="320" y="50" text-anchor="middle" style="font-size:11px">7-8.ons</text>
+    <rect class="b-gen" x="388" y="28" width="112" height="34" rx="7"/><text class="t-mono" x="444" y="50" text-anchor="middle" style="font-size:11px">(untuk 1 Porsi)</text>
+    <rect class="b-gen" x="512" y="28" width="112" height="34" rx="7"/><text class="t-mono" x="568" y="50" text-anchor="middle" style="font-size:11px">(14 Pcs)</text>
+  </g>
+  <g class="t-edge">
+    <path class="e" d="M72 62 V84 M72 104 V126 M196 62 V84 M196 104 V126 M320 62 V84 M320 104 V126 M444 62 V84 M444 104 V126 M568 62 V84 M568 104 V126"/>
+    <text x="72" y="98" text-anchor="middle">wrapped name</text>
+    <text x="196" y="98" text-anchor="middle">wrapped name</text>
+    <text x="320" y="98" text-anchor="middle" style="fill:var(--warn)">digit dropped</text>
+    <text x="444" y="98" text-anchor="middle">wrapped name</text>
+    <text x="568" y="98" text-anchor="middle">wrapped name</text>
+  </g>
+  <g>
+    <rect class="b-train" x="16" y="126" width="112" height="34" rx="7"/><text class="t-mono" x="72" y="148" text-anchor="middle" style="font-size:11px">Porsi B</text>
+    <rect class="b-train" x="140" y="126" width="112" height="34" rx="7"/><text class="t-mono" x="196" y="148" text-anchor="middle" style="font-size:11px">…yoko,Mar</text>
+    <rect class="b-train" x="264" y="126" width="112" height="34" rx="7"/><text class="t-mono" x="320" y="148" text-anchor="middle" style="font-size:11px">7-8.4ons</text>
+    <rect class="b-train" x="388" y="126" width="112" height="34" rx="7"/><text class="t-mono" x="444" y="148" text-anchor="middle" style="font-size:11px">(untuk 1 Po</text>
+    <rect class="b-train" x="512" y="126" width="112" height="34" rx="7"/><text class="t-mono" x="568" y="148" text-anchor="middle" style="font-size:11px">(14 Pcs</text>
+  </g>
+  <text class="t-axis" x="16" y="184">constraint on: the receipt's own text, each one logged as an override</text>
+</svg>
+</div>
+</div>
+<figcaption>Four are item names that wrap onto the next printed line, which the unconstrained model joined into words the receipt never prints. One is a figure with a digit dropped. Constrained, the model stopped at each line break and wrote the figure as printed. There were no other overrides in the 96 receipts.</figcaption>
+</figure>
+<p>None of the five matches the dataset's reference values, so the two runs score the same. The difference is in what a caller can trust. Constrained, every value is the receipt's own text, and the five places where the model pulled away are marked. A pipeline that withholds overridden values would have withheld exactly those five and nothing else. On SQuAD it is the same story: the fine-tuned model was overridden in one answer of 300, and that answer was wrong.</p>
+<p>Example B in <a href="#examples">section 03</a> follows the digit-dropped case through to the row a caller receives.</p>
+<p><code>--token-confidence</code> adds each token's log-probability and its top-two margin over the whole vocabulary, taken before the mask. That gives a second, softer signal beside the overrides.</p>
+
+<h2 id="exact"><span class="num">07</span>Speculative decoding that changes no byte</h2>
+<p>Decoding one token at a time on a Mac is limited by memory bandwidth: every step reads every weight. Speculative decoding guesses several tokens ahead and checks them all in one pass, so the weights are read once for several tokens. In most implementations, though, the check pass is not bit-for-bit the same computation as a one-token step. A matrix multiply over many rows sums in a different order from a matrix-vector multiply over one row. A different order rounds differently, and on a near-tie a different rounding flips the argmax. The output is "almost always" the same.</p>
+<p>For a pipeline that must be reproducible, "almost always" isn't enough. quotebound's check pass is built so that each row equals the one-token step <strong>bit for bit</strong>.</p>
+
+<figure>
+<div class="panel">
+<h4>One verify pass</h4>
+<p class="sub">Four drafted tokens checked in one pass. Three match, so the pass yields four tokens.</p>
+<p class="scrollhint">Swipe sideways to see the whole diagram.</p>
+<div class="scrollx">
+<svg viewBox="0 0 720 250" role="img" aria-label="Exact verify pass: drafts are checked in one pass; the matching prefix and the model's own next token are kept and the caches roll back">
+  <defs><marker id="ah3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="context-stroke"/></marker></defs>
+  <text class="t-axis" x="10" y="20">context</text>
+  <rect class="b-io" x="10" y="28" width="170" height="34" rx="7"/>
+  <text class="t-mono" x="95" y="50" text-anchor="middle" style="font-size:12px">…,"total":"</text>
+  <text class="t-axis" x="196" y="20">drafts (free: prompt lookup, n-grams)</text>
+  <rect class="b-node" x="196" y="28" width="96" height="34" rx="7" style="stroke-dasharray:4 3"/><text class="t-mono" x="244" y="50" text-anchor="middle" style="font-size:12px">111</text>
+  <rect class="b-node" x="300" y="28" width="96" height="34" rx="7" style="stroke-dasharray:4 3"/><text class="t-mono" x="348" y="50" text-anchor="middle" style="font-size:12px">,</text>
+  <rect class="b-node" x="404" y="28" width="96" height="34" rx="7" style="stroke-dasharray:4 3"/><text class="t-mono" x="452" y="50" text-anchor="middle" style="font-size:12px">000</text>
+  <rect class="b-node" x="508" y="28" width="96" height="34" rx="7" style="stroke-dasharray:4 3"/><text class="t-mono" x="556" y="50" text-anchor="middle" style="font-size:12px">"}</text>
+  <rect class="b-core" x="196" y="84" width="408" height="44" rx="9"/>
+  <text class="t-title" x="400" y="104" text-anchor="middle">one pass over the rows</text>
+  <text class="t-sub" x="400" y="120" text-anchor="middle">each row bit-identical to a one-token step · weights read once</text>
+  <path class="e" d="M400 62 V82" marker-end="url(#ah3)"/>
+  <text class="t-axis" x="10" y="160">masked argmax</text>
+  <rect class="b-train" x="196" y="146" width="96" height="30" rx="7"/><text class="t-mono" x="244" y="166" text-anchor="middle" style="font-size:12px">111</text>
+  <rect class="b-train" x="300" y="146" width="96" height="30" rx="7"/><text class="t-mono" x="348" y="166" text-anchor="middle" style="font-size:12px">,</text>
+  <rect class="b-train" x="404" y="146" width="96" height="30" rx="7"/><text class="t-mono" x="452" y="166" text-anchor="middle" style="font-size:12px">000</text>
+  <rect class="b-gen" x="508" y="146" width="96" height="30" rx="7"/><text class="t-mono" x="556" y="166" text-anchor="middle" style="font-size:12px">"</text>
+  <text class="t-edge" x="244" y="194" text-anchor="middle">matches</text>
+  <text class="t-edge" x="348" y="194" text-anchor="middle">matches</text>
+  <text class="t-edge" x="452" y="194" text-anchor="middle">matches</text>
+  <text class="t-edge" x="556" y="194" text-anchor="middle" style="fill:var(--warn)">differs: model's own token kept</text>
+  <path class="e" d="M400 128 V144" marker-end="url(#ah3)"/>
+  <rect class="b-io" x="196" y="208" width="408" height="34" rx="8"/>
+  <text class="t-title" x="400" y="230" text-anchor="middle">kept: 111 , 000 "  ·  caches cut back to the last kept row</text>
+  <rect class="b-node" x="620" y="84" width="92" height="158" rx="9"/>
+  <text class="t-title" x="666" y="108" text-anchor="middle">Inside</text>
+  <text class="t-sub" x="666" y="128" text-anchor="middle">GEMV rows:</text>
+  <text class="t-sub" x="666" y="142" text-anchor="middle">MLX's sum order</text>
+  <text class="t-sub" x="666" y="162" text-anchor="middle">attention:</text>
+  <text class="t-sub" x="666" y="176" text-anchor="middle">per row</text>
+  <text class="t-sub" x="666" y="196" text-anchor="middle">DeltaNet:</text>
+  <text class="t-sub" x="666" y="210" text-anchor="middle">step by step,</text>
+  <text class="t-sub" x="666" y="224" text-anchor="middle">states kept</text>
+</svg>
+</div>
+</div>
+</figure>
+<ul>
+  <li><strong>Projections</strong> run through a GEMV kernel adapted from MLX's own. It holds <em>V</em> vectors where MLX's holds one. Each lane splits the inner dimension the same way, adds its products in the same order, and reduces with the same shuffles. Each tile of the weight matrix is loaded once and applied to every vector before the next tile is read. So the bandwidth saving is real and the arithmetic is unchanged.</li>
+  <li><strong>Attention</strong> runs each row on its own, over the keys up to it, as its decode step would. So does the recurrent layers' convolution window.</li>
+  <li><strong>The Gated DeltaNet state</strong> advances one step at a time, and every row's state is kept. When a draft is rejected, the caches are cut back to the last accepted row.</li>
+  <li><strong>LoRA adapters</strong> are applied unmerged, through the same low-rank path in float32 that the one-token step uses.</li>
+</ul>
+<p>The drafts themselves cost no model call. <strong>Prompt lookup</strong> uses the tokens that followed the latest earlier occurrence of the current context, which works well because quotes are copied from the prompt. An <strong>n-gram table</strong> of the training set's answers covers the keys, punctuation and enum values the model writes every time. A wrong guess costs a little verify work, never a different answer.</p>
+<div class="stats">
+  <div class="stat"><div class="v">96 / 96</div><div class="l">receipts byte-identical with drafts</div></div>
+  <div class="stat"><div class="v">300 / 300</div><div class="l">SQuAD answers byte-identical with drafts</div></div>
+  <div class="stat"><div class="v">4.73</div><div class="l">tokens a pass on receipts (2.46 on SQuAD)</div></div>
+  <div class="stat"><div class="v">3.2×</div><div class="l">less time per receipt (4.27 → 1.35 s)</div></div>
+</div>
+<p>The test suite checks the same property more broadly. 288 answers, over float32 and bfloat16, three drafters and draft lengths 1, 3, 8 and 15, all equal the plain constrained decoder's, overrides and budget cuts included.</p>
+<div class="callout warn"><p>Two flags trade exactness for speed, and are documented as inexact. <code>--merge-lora</code> folds the adapter into the bf16 weights, and rounding the merged weights once can change answers. <code>--quantize 8</code> runs 8-bit weights. Neither is used for any number on this page.</p></div>
+
+<h2 id="training"><span class="num">08</span>Fine-tuning Qwen3.5 locally</h2>
+<p>Qwen3.5 is a hybrid model. Most of its layers are <strong>Gated DeltaNet</strong> layers, a recurrence with a matrix-valued state per head, and the rest are full attention. MLX ships a fast forward kernel for the recurrence, but training needs its gradient. quotebound supplies it through <code>mx::custom_vjp</code>:</p>
+<ul>
+  <li><strong>The forward is unchanged:</strong> the model's own call to MLX's recurrence op, in float32. The training forward equals inference without a cache, bit for bit.</li>
+  <li><strong>Checkpoints.</strong> The state is saved at every 64th step. These are the forward's own bits, because the op gives the same bits for any split into chunks of 16 steps or more.</li>
+  <li><strong>A Metal kernel for the backward.</strong> For each chunk, last first, the kernel replays the chunk from its saved start and walks it backwards. It keeps the start of every 8 steps in registers, so no per-step state ever goes to memory. One simdgroup owns one row of the state, as in the forward kernel.</li>
+  <li><strong>Deterministic sums.</strong> Gradients that sum over rows are reduced in threadgroup memory in a fixed order, with no atomics. Atomics would be faster, but their sums depend on scheduling, and a deterministic gradient is what makes a resumed run match an uninterrupted one bit for bit.</li>
+</ul>
+<p>The kernel's gradients are checked against autodiff through plain MLX ops, and the forward against mlx-lm's kernel. Around it sit the usual pieces:</p>
+<ul>
+  <li>LoRA on the attention, DeltaNet and MLP projections, with rank 16 and alpha 32 by default;</li>
+  <li>per-layer activation checkpointing;</li>
+  <li>cross-entropy computed 256 positions at a time over the 248,320-token vocabulary;</li>
+  <li>AdamW as PyTorch defines it, with warmup and a cosine schedule;</li>
+  <li>checkpoints that resume exactly, and adapters that refuse to load on a different base checkpoint or chat template.</li>
+</ul>
+
+<figure>
+<div class="panel">
+<h4>Training loss, both recipes</h4>
+<p class="sub">Per-step training loss (5-step moving average) and dev loss at each evaluation, log scale, against the share of training done.</p>
+<div class="legend"><span><i style="background:var(--accent)"></i>SQuAD · 141 steps</span><span><i style="background:var(--c2)"></i>Receipts · 106 steps</span><span><i style="background:var(--card);border:2px solid var(--fg)"></i>dev loss</span></div>
+<p class="scrollhint">Swipe sideways to see the whole chart.</p>
+<div class="scrollx">
+<svg viewBox="0 0 640 260" role="img" aria-label="Training loss curves for the SQuAD and receipts recipes on a log scale">
+  <g class="grid">
+  <path d="M52 22.4 H624"/>
+  <path d="M52 64.6 H624"/>
+  <path d="M52 103.1 H624"/>
+  <path d="M52 145.3 H624"/>
+  <path d="M52 183.8 H624"/>
+  <path d="M52 226.0 H624"/>
+  </g>
+  <text class="t-axis" x="46" y="26.4" text-anchor="end">1</text>
+  <text class="t-axis" x="46" y="68.6" text-anchor="end">0.3</text>
+  <text class="t-axis" x="46" y="107.1" text-anchor="end">0.1</text>
+  <text class="t-axis" x="46" y="149.3" text-anchor="end">0.03</text>
+  <text class="t-axis" x="46" y="187.8" text-anchor="end">0.01</text>
+  <text class="t-axis" x="46" y="230.0" text-anchor="end">0.003</text>
+  <text class="t-axis" x="10" y="12">loss</text>
+  <path d="M56.1,26.1 L60.1,28.9 L64.2,37.8 L68.2,43.9 L72.3,50.9 L76.3,65.1 L80.4,86.4 L84.5,92.5 L88.5,93.9 L92.6,92.7 L96.6,95.6 L100.7,91.9 L104.7,91.6 L108.8,92.4 L112.9,91.0 L116.9,90.2 L121.0,88.7 L125.0,88.7 L129.1,93.3 L133.1,90.7 L137.2,93.5 L141.2,98.8 L145.3,94.9 L149.4,84.5 L153.4,87.5 L157.5,86.6 L161.5,89.7 L165.6,96.9 L169.6,115.3 L173.7,116.8 L177.8,105.7 L181.8,105.4 L185.9,106.6 L189.9,103.6 L194.0,102.4 L198.0,108.1 L202.1,98.4 L206.2,95.4 L210.2,92.8 L214.3,94.5 L218.3,95.4 L222.4,98.4 L226.4,93.5 L230.5,92.3 L234.6,89.4 L238.6,89.9 L242.7,86.5 L246.7,92.5 L250.8,94.8 L254.8,93.3 L258.9,91.5 L263.0,100.4 L267.0,95.3 L271.1,99.6 L275.1,92.0 L279.2,91.2 L283.2,86.7 L287.3,92.5 L291.3,87.4 L295.4,91.2 L299.5,96.4 L303.5,96.5 L307.6,87.5 L311.6,84.3 L315.7,86.1 L319.7,84.1 L323.8,82.0 L327.9,81.7 L331.9,89.7 L336.0,90.1 L340.0,89.3 L344.1,88.7 L348.1,95.9 L352.2,91.0 L356.3,90.1 L360.3,89.7 L364.4,95.7 L368.4,93.2 L372.5,92.2 L376.5,96.8 L380.6,97.9 L384.7,92.4 L388.7,92.5 L392.8,95.4 L396.8,96.5 L400.9,99.7 L404.9,112.0 L409.0,102.6 L413.0,103.7 L417.1,102.0 L421.2,95.5 L425.2,91.6 L429.3,102.3 L433.3,102.7 L437.4,96.4 L441.4,96.9 L445.5,95.5 L449.6,91.6 L453.6,88.5 L457.7,90.6 L461.7,93.4 L465.8,95.6 L469.8,92.7 L473.9,98.8 L478.0,103.9 L482.0,103.2 L486.1,96.6 L490.1,97.1 L494.2,94.3 L498.2,89.6 L502.3,89.5 L506.4,94.5 L510.4,96.2 L514.5,96.6 L518.5,94.3 L522.6,95.8 L526.6,94.1 L530.7,93.1 L534.8,95.2 L538.8,99.7 L542.9,98.6 L546.9,102.1 L551.0,108.6 L555.0,107.6 L559.1,113.6 L563.1,114.7 L567.2,106.9 L571.3,104.2 L575.3,105.5 L579.4,106.7 L583.4,105.6 L587.5,102.5 L591.5,106.9 L595.6,103.2 L599.7,97.4 L603.7,99.4 L607.8,108.2 L611.8,104.4 L615.9,103.1 L619.9,107.2 L624.0,104.4" style="fill:none;stroke:var(--accent);stroke-width:2"/>
+  <path d="M57.4,31.9 L62.8,35.3 L68.2,42.2 L73.6,45.0 L79.0,49.8 L84.4,63.0 L89.8,74.5 L95.2,81.5 L100.6,97.7 L106.0,107.2 L111.4,108.0 L116.8,122.3 L122.2,133.3 L127.5,139.5 L132.9,142.9 L138.3,144.1 L143.7,145.7 L149.1,146.4 L154.5,143.1 L159.9,147.8 L165.3,151.7 L170.7,157.7 L176.1,166.2 L181.5,163.2 L186.9,159.6 L192.3,154.3 L197.7,154.3 L203.1,152.8 L208.5,156.1 L213.9,150.5 L219.3,154.0 L224.7,152.9 L230.1,154.6 L235.5,154.8 L240.9,167.5 L246.3,172.4 L251.7,174.5 L257.1,174.2 L262.5,182.1 L267.8,179.2 L273.2,169.9 L278.6,173.7 L284.0,174.9 L289.4,175.8 L294.8,179.5 L300.2,183.6 L305.6,178.3 L311.0,171.0 L316.4,170.0 L321.8,159.6 L327.2,163.4 L332.6,160.4 L338.0,158.6 L343.4,162.1 L348.8,172.7 L354.2,174.1 L359.6,185.3 L365.0,200.5 L370.4,193.5 L375.8,194.7 L381.2,192.4 L386.6,186.5 L392.0,189.0 L397.4,191.1 L402.8,187.9 L408.2,185.7 L413.5,188.2 L418.9,185.4 L424.3,182.1 L429.7,180.8 L435.1,186.1 L440.5,185.2 L445.9,190.5 L451.3,205.2 L456.7,215.3 L462.1,211.2 L467.5,218.2 L472.9,204.0 L478.3,201.1 L483.7,200.6 L489.1,202.5 L494.5,197.5 L499.9,213.9 L505.3,203.6 L510.7,204.4 L516.1,203.5 L521.5,206.0 L526.9,204.7 L532.3,216.6 L537.7,220.3 L543.1,198.7 L548.5,201.9 L553.8,201.2 L559.2,193.6 L564.6,184.0 L570.0,191.5 L575.4,194.0 L580.8,190.7 L586.2,195.5 L591.6,213.3 L597.0,217.9 L602.4,193.8 L607.8,193.4 L613.2,187.5 L618.6,184.7 L624.0,186.8" style="fill:none;stroke:var(--c2);stroke-width:2"/>
+  <circle cx="52.0" cy="30.4" r="4" style="fill:var(--card);stroke:var(--accent);stroke-width:2"><title>squad dev loss 0.7951 at step 0</title></circle>
+  <circle cx="214.3" cy="98.1" r="4" style="fill:var(--card);stroke:var(--accent);stroke-width:2"><title>squad dev loss 0.1154 at step 40</title></circle>
+  <circle cx="376.5" cy="99.2" r="4" style="fill:var(--card);stroke:var(--accent);stroke-width:2"><title>squad dev loss 0.1116 at step 80</title></circle>
+  <circle cx="538.8" cy="101.3" r="4" style="fill:var(--card);stroke:var(--accent);stroke-width:2"><title>squad dev loss 0.1053 at step 120</title></circle>
+  <circle cx="624.0" cy="101.3" r="4" style="fill:var(--card);stroke:var(--accent);stroke-width:2"><title>squad dev loss 0.1053 at step 141</title></circle>
+  <circle cx="52.0" cy="34.9" r="4" style="fill:var(--card);stroke:var(--c2);stroke-width:2"><title>receipts dev loss 0.6996 at step 0</title></circle>
+  <circle cx="186.9" cy="161.2" r="4" style="fill:var(--card);stroke:var(--c2);stroke-width:2"><title>receipts dev loss 0.01907 at step 25</title></circle>
+  <circle cx="321.8" cy="180.2" r="4" style="fill:var(--card);stroke:var(--c2);stroke-width:2"><title>receipts dev loss 0.01109 at step 50</title></circle>
+  <circle cx="456.7" cy="187.9" r="4" style="fill:var(--card);stroke:var(--c2);stroke-width:2"><title>receipts dev loss 0.008891 at step 75</title></circle>
+  <circle cx="591.6" cy="191.3" r="4" style="fill:var(--card);stroke:var(--c2);stroke-width:2"><title>receipts dev loss 0.008064 at step 100</title></circle>
+  <circle cx="624.0" cy="191.3" r="4" style="fill:var(--card);stroke:var(--c2);stroke-width:2"><title>receipts dev loss 0.008082 at step 106</title></circle>
+  <text class="t-val" x="616.0" y="91.3" text-anchor="end" style="fill:var(--accent)">dev 0.105</text>
+  <text class="t-val" x="616.0" y="209.3" text-anchor="end" style="fill:var(--c2)">dev 0.0081</text>
+  <text class="t-axis" x="52" y="250">start</text>
+  <text class="t-axis" x="338" y="250" text-anchor="middle">half</text>
+  <text class="t-axis" x="624" y="250" text-anchor="end">end</text>
+</svg>
+</div>
+</div>
+<figcaption>Dev loss falls from 0.80 to 0.105 on SQuAD and from 0.70 to 0.0081 on receipts. On an M4 Pro with 48 GB, training the 4B runs at about 210 tokens a second and peaks at 13.5 GB.</figcaption>
+</figure>
+
+<h3>The training runs, step by step</h3>
+<p>Every optimizer step writes one line of JSON: loss, learning rate, gradient norm, tokens, time and peak memory. These four charts are drawn from those lines for the two recipe runs.</p>
+<div class="legend"><span><i style="background:var(--accent)"></i>SQuAD · 141 steps</span><span><i style="background:var(--c2)"></i>Receipts · 106 steps</span></div>
+<div class="dash">
+<div class="panel"><h4>Learning rate</h4><p class="sub">Linear warmup, then cosine decay. Peak 1e-4.</p>
+<svg viewBox="0 0 320 200" role="img" aria-label="Learning rate per step: linear warmup to 1e-4, then cosine decay to near zero, both recipes">
+  <g class="grid">
+  <path d="M44 170.0 H308"/>
+  <path d="M44 136.5 H308"/>
+  <path d="M44 103.0 H308"/>
+  <path d="M44 69.6 H308"/>
+  <path d="M44 36.1 H308"/>
+  </g>
+  <text class="t-axis" x="38" y="173.5" text-anchor="end">0</text>
+  <text class="t-axis" x="38" y="140.0" text-anchor="end">2.5e-5</text>
+  <text class="t-axis" x="38" y="106.5" text-anchor="end">5e-5</text>
+  <text class="t-axis" x="38" y="73.1" text-anchor="end">7.5e-5</text>
+  <text class="t-axis" x="38" y="39.6" text-anchor="end">1e-4</text>
+  <text class="t-axis" x="44.0" y="185" text-anchor="middle">0</text>
+  <text class="t-axis" x="135.0" y="185" text-anchor="middle">50</text>
+  <text class="t-axis" x="226.1" y="185" text-anchor="middle">100</text>
+  <text class="t-axis" x="300.7" y="185" text-anchor="middle">141</text>
+  <text class="t-axis" x="308" y="198" text-anchor="end">optimizer step</text>
+  <text class="t-axis" x="2" y="10">lr</text>
+  <path d="M44.0,170.0 L45.8,150.9 L47.6,131.7 L49.5,112.6 L51.3,93.5 L53.1,74.3 L54.9,55.2 L56.7,36.1 L58.6,36.1 L60.4,36.1 L62.2,36.1 L64.0,36.2 L65.8,36.4 L67.7,36.5 L69.5,36.7 L71.3,37.0 L73.1,37.2 L75.0,37.6 L76.8,37.9 L78.6,38.3 L80.4,38.7 L82.2,39.2 L84.1,39.6 L85.9,40.2 L87.7,40.7 L89.5,41.3 L91.3,41.9 L93.2,42.6 L95.0,43.3 L96.8,44.0 L98.6,44.8 L100.4,45.6 L102.3,46.4 L104.1,47.2 L105.9,48.1 L107.7,49.0 L109.5,50.0 L111.4,51.0 L113.2,52.0 L115.0,53.0 L116.8,54.0 L118.6,55.1 L120.5,56.2 L122.3,57.4 L124.1,58.5 L125.9,59.7 L127.8,60.9 L129.6,62.2 L131.4,63.4 L133.2,64.7 L135.0,66.0 L136.9,67.3 L138.7,68.7 L140.5,70.0 L142.3,71.4 L144.1,72.8 L146.0,74.2 L147.8,75.6 L149.6,77.0 L151.4,78.5 L153.2,80.0 L155.1,81.4 L156.9,82.9 L158.7,84.4 L160.5,86.0 L162.3,87.5 L164.2,89.0 L166.0,90.5 L167.8,92.1 L169.6,93.6 L171.4,95.2 L173.3,96.8 L175.1,98.3 L176.9,99.9 L178.7,101.5 L180.6,103.0 L182.4,104.6 L184.2,106.2 L186.0,107.7 L187.8,109.3 L189.7,110.9 L191.5,112.4 L193.3,114.0 L195.1,115.5 L196.9,117.1 L198.8,118.6 L200.6,120.1 L202.4,121.6 L204.2,123.1 L206.0,124.6 L207.9,126.1 L209.7,127.6 L211.5,129.0 L213.3,130.5 L215.1,131.9 L217.0,133.3 L218.8,134.7 L220.6,136.1 L222.4,137.4 L224.2,138.8 L226.1,140.1 L227.9,141.4 L229.7,142.6 L231.5,143.9 L233.4,145.1 L235.2,146.3 L237.0,147.5 L238.8,148.7 L240.6,149.8 L242.5,150.9 L244.3,152.0 L246.1,153.1 L247.9,154.1 L249.7,155.1 L251.6,156.1 L253.4,157.0 L255.2,157.9 L257.0,158.8 L258.8,159.7 L260.7,160.5 L262.5,161.3 L264.3,162.0 L266.1,162.8 L267.9,163.5 L269.8,164.1 L271.6,164.8 L273.4,165.3 L275.2,165.9 L277.0,166.4 L278.9,166.9 L280.7,167.4 L282.5,167.8 L284.3,168.2 L286.2,168.5 L288.0,168.8 L289.8,169.1 L291.6,169.3 L293.4,169.5 L295.3,169.7 L297.1,169.8 L298.9,169.9 L300.7,170.0" style="fill:none;stroke:var(--accent);stroke-width:1.8"/>
+  <path d="M44.0,170.0 L45.8,143.2 L47.6,116.4 L49.5,89.6 L51.3,62.9 L53.1,36.1 L54.9,36.1 L56.7,36.1 L58.6,36.2 L60.4,36.4 L62.2,36.6 L64.0,36.9 L65.8,37.2 L67.7,37.7 L69.5,38.1 L71.3,38.7 L73.1,39.3 L75.0,40.0 L76.8,40.7 L78.6,41.5 L80.4,42.3 L82.2,43.2 L84.1,44.2 L85.9,45.2 L87.7,46.3 L89.5,47.4 L91.3,48.6 L93.2,49.9 L95.0,51.1 L96.8,52.5 L98.6,53.9 L100.4,55.3 L102.3,56.8 L104.1,58.3 L105.9,59.9 L107.7,61.5 L109.5,63.2 L111.4,64.9 L113.2,66.6 L115.0,68.4 L116.8,70.2 L118.6,72.0 L120.5,73.8 L122.3,75.7 L124.1,77.7 L125.9,79.6 L127.8,81.6 L129.6,83.5 L131.4,85.5 L133.2,87.6 L135.0,89.6 L136.9,91.6 L138.7,93.7 L140.5,95.8 L142.3,97.8 L144.1,99.9 L146.0,102.0 L147.8,104.1 L149.6,106.2 L151.4,108.2 L153.2,110.3 L155.1,112.4 L156.9,114.4 L158.7,116.5 L160.5,118.5 L162.3,120.5 L164.2,122.5 L166.0,124.5 L167.8,126.5 L169.6,128.4 L171.4,130.3 L173.3,132.2 L175.1,134.1 L176.9,135.9 L178.7,137.7 L180.6,139.5 L182.4,141.2 L184.2,142.9 L186.0,144.6 L187.8,146.2 L189.7,147.7 L191.5,149.3 L193.3,150.8 L195.1,152.2 L196.9,153.6 L198.8,154.9 L200.6,156.2 L202.4,157.5 L204.2,158.6 L206.0,159.8 L207.9,160.9 L209.7,161.9 L211.5,162.8 L213.3,163.8 L215.1,164.6 L217.0,165.4 L218.8,166.1 L220.6,166.8 L222.4,167.4 L224.2,167.9 L226.1,168.4 L227.9,168.8 L229.7,169.2 L231.5,169.5 L233.4,169.7 L235.2,169.9 L237.0,170.0" style="fill:none;stroke:var(--c2);stroke-width:1.8"/>
+  <text class="t-edge" x="69.5" y="31.1">warmup 7 / 5 steps, then cosine to zero</text>
+</svg>
+</div>
+<div class="panel"><h4>Gradient norm</h4><p class="sub">Before clipping, log scale. Steps above 1.0 are scaled down to 1.0.</p>
+<svg viewBox="0 0 320 200" role="img" aria-label="Gradient norm per step before clipping, log scale, with the clip at 1.0">
+  <g class="grid">
+  <path d="M44 166.1 H308"/>
+  <path d="M44 125.5 H308"/>
+  <path d="M44 85.0 H308"/>
+  <path d="M44 44.4 H308"/>
+  </g>
+  <text class="t-axis" x="38" y="169.6" text-anchor="end">0.01</text>
+  <text class="t-axis" x="38" y="129.0" text-anchor="end">0.1</text>
+  <text class="t-axis" x="38" y="88.5" text-anchor="end">1</text>
+  <text class="t-axis" x="38" y="47.9" text-anchor="end">10</text>
+  <text class="t-axis" x="44.0" y="185" text-anchor="middle">0</text>
+  <text class="t-axis" x="135.0" y="185" text-anchor="middle">50</text>
+  <text class="t-axis" x="226.1" y="185" text-anchor="middle">100</text>
+  <text class="t-axis" x="300.7" y="185" text-anchor="middle">141</text>
+  <text class="t-axis" x="308" y="198" text-anchor="end">optimizer step</text>
+  <text class="t-axis" x="2" y="10">grad norm</text>
+  <path d="M45.8,28.2 L47.6,33.4 L49.5,46.2 L51.3,66.9 L53.1,68.2 L54.9,68.1 L56.7,80.8 L58.6,67.7 L60.4,58.2 L62.2,85.2 L64.0,90.1 L65.8,87.4 L67.7,85.5 L69.5,82.7 L71.3,88.0 L73.1,67.0 L75.0,85.0 L76.8,85.9 L78.6,88.4 L80.4,89.5 L82.2,84.8 L84.1,91.3 L85.9,85.4 L87.7,81.6 L89.5,88.9 L91.3,93.3 L93.2,102.5 L95.0,95.9 L96.8,90.8 L98.6,73.8 L100.4,85.0 L102.3,103.8 L104.1,101.4 L105.9,92.8 L107.7,97.7 L109.5,89.6 L111.4,83.3 L113.2,91.0 L115.0,84.2 L116.8,99.0 L118.6,88.9 L120.5,94.7 L122.3,90.7 L124.1,79.9 L125.9,94.2 L127.8,96.2 L129.6,85.4 L131.4,95.1 L133.2,69.7 L135.0,84.8 L136.9,93.9 L138.7,104.0 L140.5,88.8 L142.3,86.7 L144.1,87.1 L146.0,93.1 L147.8,95.8 L149.6,81.7 L151.4,65.7 L153.2,90.5 L155.1,94.0 L156.9,87.3 L158.7,80.6 L160.5,76.6 L162.3,89.7 L164.2,91.6 L166.0,83.6 L167.8,88.7 L169.6,80.3 L171.4,94.1 L173.3,90.2 L175.1,87.5 L176.9,73.6 L178.7,92.6 L180.6,86.8 L182.4,91.3 L184.2,100.4 L186.0,95.2 L187.8,85.0 L189.7,98.5 L191.5,91.6 L193.3,85.7 L195.1,94.0 L196.9,90.9 L198.8,88.8 L200.6,99.7 L202.4,113.9 L204.2,85.6 L206.0,95.4 L207.9,94.6 L209.7,84.5 L211.5,99.3 L213.3,99.6 L215.1,93.4 L217.0,91.8 L218.8,83.3 L220.6,94.8 L222.4,95.5 L224.2,91.0 L226.1,87.4 L227.9,91.6 L229.7,88.4 L231.5,86.1 L233.4,99.0 L235.2,96.3 L237.0,93.2 L238.8,87.5 L240.6,91.5 L242.5,89.1 L244.3,87.9 L246.1,90.1 L247.9,102.7 L249.7,89.2 L251.6,99.2 L253.4,75.8 L255.2,97.7 L257.0,94.1 L258.8,89.4 L260.7,90.9 L262.5,79.6 L264.3,93.1 L266.1,98.7 L267.9,101.1 L269.8,99.9 L271.6,98.0 L273.4,91.6 L275.2,97.2 L277.0,89.7 L278.9,88.2 L280.7,106.6 L282.5,91.9 L284.3,90.0 L286.2,89.9 L288.0,90.4 L289.8,91.8 L291.6,97.0 L293.4,85.9 L295.3,93.0 L297.1,92.5 L298.9,93.5 L300.7,84.8" style="fill:none;stroke:var(--accent);stroke-width:1.3"/>
+  <path d="M45.8,52.2 L47.6,56.3 L49.5,75.1 L51.3,76.2 L53.1,88.7 L54.9,101.8 L56.7,76.3 L58.6,84.2 L60.4,95.0 L62.2,95.4 L64.0,90.1 L65.8,83.5 L67.7,92.2 L69.5,104.4 L71.3,87.1 L73.1,92.2 L75.0,93.6 L76.8,97.5 L78.6,106.2 L80.4,105.5 L82.2,111.1 L84.1,107.2 L85.9,112.4 L87.7,96.8 L89.5,110.9 L91.3,102.9 L93.2,107.9 L95.0,111.8 L96.8,99.4 L98.6,89.7 L100.4,108.6 L102.3,110.8 L104.1,118.6 L105.9,106.8 L107.7,110.2 L109.5,107.1 L111.4,109.3 L113.2,121.9 L115.0,108.0 L116.8,114.0 L118.6,100.1 L120.5,128.4 L122.3,117.3 L124.1,115.2 L125.9,114.8 L127.8,116.4 L129.6,111.2 L131.4,117.2 L133.2,116.1 L135.0,103.0 L136.9,121.2 L138.7,102.8 L140.5,114.0 L142.3,123.9 L144.1,102.5 L146.0,127.2 L147.8,135.0 L149.6,116.2 L151.4,118.8 L153.2,112.6 L155.1,121.2 L156.9,111.9 L158.7,121.8 L160.5,119.9 L162.3,117.0 L164.2,116.5 L166.0,126.4 L167.8,118.9 L169.6,110.9 L171.4,115.6 L173.3,133.1 L175.1,118.1 L176.9,136.4 L178.7,166.2 L180.6,118.7 L182.4,121.1 L184.2,110.0 L186.0,119.5 L187.8,125.6 L189.7,123.0 L191.5,127.7 L193.3,119.6 L195.1,135.6 L196.9,118.1 L198.8,123.8 L200.6,122.6 L202.4,117.7 L204.2,139.5 L206.0,134.1 L207.9,124.3 L209.7,110.8 L211.5,115.7 L213.3,130.7 L215.1,122.6 L217.0,109.8 L218.8,117.5 L220.6,155.5 L222.4,126.4 L224.2,118.8 L226.1,140.3 L227.9,115.6 L229.7,104.1 L231.5,117.8 L233.4,116.8 L235.2,121.5 L237.0,114.9" style="fill:none;stroke:var(--c2);stroke-width:1.3"/>
+  <path d="M44 85.0 H308" style="stroke:var(--warn);stroke-width:1.4;stroke-dasharray:5 4"/>
+  <text class="t-edge" x="306" y="80.0" text-anchor="end" style="fill:var(--warn)">clipped to 1.0</text>
+</svg>
+</div>
+<div class="panel"><h4>Training speed</h4><p class="sub">Tokens a second per step, prompt and answer tokens together.</p>
+<svg viewBox="0 0 320 200" role="img" aria-label="Training throughput per step in tokens a second, both recipes">
+  <g class="grid">
+  <path d="M44 170.0 H308"/>
+  <path d="M44 141.2 H308"/>
+  <path d="M44 112.3 H308"/>
+  <path d="M44 83.5 H308"/>
+  <path d="M44 54.6 H308"/>
+  <path d="M44 25.8 H308"/>
+  </g>
+  <text class="t-axis" x="38" y="173.5" text-anchor="end">0</text>
+  <text class="t-axis" x="38" y="144.7" text-anchor="end">50</text>
+  <text class="t-axis" x="38" y="115.8" text-anchor="end">100</text>
+  <text class="t-axis" x="38" y="87.0" text-anchor="end">150</text>
+  <text class="t-axis" x="38" y="58.1" text-anchor="end">200</text>
+  <text class="t-axis" x="38" y="29.3" text-anchor="end">250</text>
+  <text class="t-axis" x="44.0" y="185" text-anchor="middle">0</text>
+  <text class="t-axis" x="135.0" y="185" text-anchor="middle">50</text>
+  <text class="t-axis" x="226.1" y="185" text-anchor="middle">100</text>
+  <text class="t-axis" x="300.7" y="185" text-anchor="middle">141</text>
+  <text class="t-axis" x="308" y="198" text-anchor="end">optimizer step</text>
+  <text class="t-axis" x="2" y="10">tokens/s</text>
+  <path d="M45.8,40.8 L47.6,40.7 L49.5,40.6 L51.3,46.7 L53.1,41.7 L54.9,42.4 L56.7,51.8 L58.6,42.6 L60.4,45.0 L62.2,42.8 L64.0,42.8 L65.8,54.3 L67.7,58.5 L69.5,38.9 L71.3,38.7 L73.1,43.3 L75.0,49.5 L76.8,50.7 L78.6,41.1 L80.4,39.8 L82.2,44.7 L84.1,47.8 L85.9,40.1 L87.7,39.8 L89.5,44.3 L91.3,38.4 L93.2,42.9 L95.0,37.8 L96.8,43.7 L98.6,52.6 L100.4,38.8 L102.3,40.7 L104.1,51.2 L105.9,43.3 L107.7,43.2 L109.5,42.6 L111.4,43.8 L113.2,41.2 L115.0,42.2 L116.8,43.4 L118.6,42.6 L120.5,55.6 L122.3,39.3 L124.1,48.2 L125.9,39.6 L127.8,40.7 L129.6,41.8 L131.4,40.1 L133.2,44.1 L135.0,38.8 L136.9,42.7 L138.7,39.2 L140.5,42.0 L142.3,45.3 L144.1,40.4 L146.0,50.1 L147.8,51.2 L149.6,53.3 L151.4,48.6 L153.2,39.3 L155.1,44.8 L156.9,43.1 L158.7,42.0 L160.5,63.7 L162.3,40.4 L164.2,45.3 L166.0,46.0 L167.8,42.6 L169.6,51.0 L171.4,45.0 L173.3,43.7 L175.1,42.9 L176.9,50.8 L178.7,40.9 L180.6,46.6 L182.4,40.4 L184.2,44.1 L186.0,47.6 L187.8,41.7 L189.7,40.7 L191.5,40.5 L193.3,42.0 L195.1,52.3 L196.9,40.2 L198.8,48.2 L200.6,42.7 L202.4,62.9 L204.2,42.6 L206.0,46.7 L207.9,43.0 L209.7,41.9 L211.5,52.9 L213.3,41.8 L215.1,53.2 L217.0,39.9 L218.8,43.9 L220.6,41.3 L222.4,43.2 L224.2,42.7 L226.1,43.2 L227.9,47.5 L229.7,49.4 L231.5,41.3 L233.4,42.7 L235.2,52.8 L237.0,42.7 L238.8,42.7 L240.6,41.2 L242.5,42.7 L244.3,44.5 L246.1,42.4 L247.9,45.0 L249.7,41.9 L251.6,54.9 L253.4,46.6 L255.2,41.3 L257.0,43.4 L258.8,41.4 L260.7,53.8 L262.5,39.6 L264.3,44.1 L266.1,44.2 L267.9,43.5 L269.8,40.8 L271.6,52.1 L273.4,45.4 L275.2,44.2 L277.0,48.2 L278.9,63.0 L280.7,42.3 L282.5,48.4 L284.3,42.1 L286.2,47.4 L288.0,44.6 L289.8,41.5 L291.6,42.4 L293.4,47.1 L295.3,39.5 L297.1,53.6 L298.9,41.1 L300.7,44.2" style="fill:none;stroke:var(--accent);stroke-width:1.4"/>
+  <path d="M45.8,45.3 L47.6,49.8 L49.5,51.7 L51.3,46.1 L53.1,48.2 L54.9,60.5 L56.7,44.8 L58.6,49.9 L60.4,49.2 L62.2,48.9 L64.0,70.4 L65.8,46.1 L67.7,46.2 L69.5,45.0 L71.3,49.9 L73.1,49.2 L75.0,46.1 L76.8,50.1 L78.6,51.5 L80.4,51.8 L82.2,58.6 L84.1,49.2 L85.9,48.2 L87.7,71.1 L89.5,52.0 L91.3,47.4 L93.2,73.4 L95.0,49.4 L96.8,68.0 L98.6,63.4 L100.4,55.4 L102.3,54.1 L104.1,49.9 L105.9,50.6 L107.7,45.3 L109.5,67.1 L111.4,53.8 L113.2,52.9 L115.0,55.5 L116.8,49.9 L118.6,53.3 L120.5,50.8 L122.3,58.2 L124.1,65.2 L125.9,52.1 L127.8,51.9 L129.6,60.6 L131.4,48.3 L133.2,54.3 L135.0,49.9 L136.9,54.9 L138.7,50.1 L140.5,49.1 L142.3,61.5 L144.1,52.4 L146.0,48.5 L147.8,52.4 L149.6,64.0 L151.4,56.3 L153.2,54.0 L155.1,51.3 L156.9,73.8 L158.7,57.2 L160.5,49.4 L162.3,54.3 L164.2,51.1 L166.0,55.2 L167.8,49.5 L169.6,50.2 L171.4,48.4 L173.3,49.5 L175.1,53.6 L176.9,51.3 L178.7,51.7 L180.6,50.3 L182.4,48.8 L184.2,53.5 L186.0,48.3 L187.8,62.1 L189.7,59.1 L191.5,48.4 L193.3,49.0 L195.1,51.5 L196.9,47.5 L198.8,54.5 L200.6,47.2 L202.4,69.7 L204.2,54.6 L206.0,48.6 L207.9,52.6 L209.7,45.4 L211.5,65.3 L213.3,47.2 L215.1,49.7 L217.0,47.7 L218.8,47.1 L220.6,47.5 L222.4,50.2 L224.2,53.8 L226.1,48.3 L227.9,49.8 L229.7,50.3 L231.5,52.8 L233.4,48.7 L235.2,52.2 L237.0,71.7" style="fill:none;stroke:var(--c2);stroke-width:1.4"/>
+  <text class="t-val" x="300.7" y="106.5" text-anchor="end">median 220 / 207 tokens a second</text>
+</svg>
+</div>
+<div class="panel"><h4>Peak memory</h4><p class="sub">The whole process, per step: bf16 base, float32 LoRA and AdamW state, activations.</p>
+<svg viewBox="0 0 320 200" role="img" aria-label="Peak memory per training step in GB, both recipes">
+  <g class="grid">
+  <path d="M44 170.0 H308"/>
+  <path d="M44 132.5 H308"/>
+  <path d="M44 95.0 H308"/>
+  <path d="M44 57.5 H308"/>
+  <path d="M44 20.0 H308"/>
+  </g>
+  <text class="t-axis" x="38" y="173.5" text-anchor="end">0</text>
+  <text class="t-axis" x="38" y="136.0" text-anchor="end">4</text>
+  <text class="t-axis" x="38" y="98.5" text-anchor="end">8</text>
+  <text class="t-axis" x="38" y="61.0" text-anchor="end">12</text>
+  <text class="t-axis" x="38" y="23.5" text-anchor="end">16</text>
+  <text class="t-axis" x="44.0" y="185" text-anchor="middle">0</text>
+  <text class="t-axis" x="135.0" y="185" text-anchor="middle">50</text>
+  <text class="t-axis" x="226.1" y="185" text-anchor="middle">100</text>
+  <text class="t-axis" x="300.7" y="185" text-anchor="middle">141</text>
+  <text class="t-axis" x="308" y="198" text-anchor="end">optimizer step</text>
+  <text class="t-axis" x="2" y="10">GB</text>
+  <path d="M45.8,48.4 L47.6,46.1 L49.5,45.0 L51.3,50.3 L53.1,46.0 L54.9,43.9 L56.7,43.9 L58.6,44.2 L60.4,65.5 L62.2,44.1 L64.0,45.3 L65.8,43.9 L67.7,45.2 L69.5,46.2 L71.3,44.5 L73.1,49.2 L75.0,43.9 L76.8,43.9 L78.6,46.1 L80.4,46.2 L82.2,47.6 L84.1,45.0 L85.9,44.5 L87.7,45.7 L89.5,44.4 L91.3,44.3 L93.2,52.6 L95.0,49.5 L96.8,43.7 L98.6,70.8 L100.4,45.6 L102.3,46.7 L104.1,43.9 L105.9,45.3 L107.7,47.3 L109.5,44.6 L111.4,61.3 L113.2,43.8 L115.0,44.7 L116.8,46.3 L118.6,45.7 L120.5,43.9 L122.3,43.6 L124.1,57.0 L125.9,44.0 L127.8,44.8 L129.6,44.9 L131.4,47.1 L133.2,45.7 L135.0,43.7 L136.9,45.0 L138.7,44.8 L140.5,44.8 L142.3,51.6 L144.1,45.1 L146.0,43.5 L147.8,45.2 L149.6,63.7 L151.4,71.1 L153.2,44.2 L155.1,45.3 L156.9,47.2 L158.7,45.6 L160.5,53.3 L162.3,45.0 L164.2,44.5 L166.0,46.3 L167.8,44.4 L169.6,71.9 L171.4,49.3 L173.3,47.2 L175.1,47.1 L176.9,56.1 L178.7,43.3 L180.6,47.9 L182.4,45.7 L184.2,45.6 L186.0,43.9 L187.8,49.3 L189.7,44.2 L191.5,44.2 L193.3,44.1 L195.1,43.4 L196.9,46.1 L198.8,68.1 L200.6,44.8 L202.4,60.3 L204.2,45.3 L206.0,44.7 L207.9,46.3 L209.7,45.1 L211.5,44.4 L213.3,47.7 L215.1,45.4 L217.0,44.2 L218.8,50.7 L220.6,46.7 L222.4,44.3 L224.2,43.3 L226.1,45.7 L227.9,50.0 L229.7,47.5 L231.5,44.1 L233.4,44.7 L235.2,45.3 L237.0,44.2 L238.8,46.0 L240.6,46.2 L242.5,46.0 L244.3,47.6 L246.1,47.2 L247.9,43.8 L249.7,44.4 L251.6,45.2 L253.4,66.2 L255.2,46.2 L257.0,44.1 L258.8,44.7 L260.7,43.5 L262.5,69.8 L264.3,45.1 L266.1,46.3 L267.9,45.6 L269.8,45.7 L271.6,45.9 L273.4,46.0 L275.2,45.0 L277.0,50.0 L278.9,62.7 L280.7,43.7 L282.5,47.0 L284.3,46.6 L286.2,45.5 L288.0,49.3 L289.8,44.8 L291.6,45.6 L293.4,57.3 L295.3,44.3 L297.1,44.6 L298.9,46.1 L300.7,61.3" style="fill:none;stroke:var(--accent);stroke-width:1.4"/>
+  <path d="M45.8,47.7 L47.6,44.7 L49.5,45.2 L51.3,45.5 L53.1,45.6 L54.9,51.8 L56.7,45.5 L58.6,45.2 L60.4,44.5 L62.2,44.3 L64.0,48.1 L65.8,44.6 L67.7,43.9 L69.5,44.6 L71.3,43.4 L73.1,44.3 L75.0,45.8 L76.8,45.0 L78.6,43.4 L80.4,45.2 L82.2,47.8 L84.1,44.1 L85.9,44.8 L87.7,46.5 L89.5,43.7 L91.3,47.3 L93.2,51.6 L95.0,45.6 L96.8,47.2 L98.6,60.9 L100.4,46.7 L102.3,47.9 L104.1,43.9 L105.9,43.2 L107.7,45.1 L109.5,65.7 L111.4,45.2 L113.2,43.2 L115.0,46.8 L116.8,44.2 L118.6,44.6 L120.5,45.3 L122.3,48.2 L124.1,48.0 L125.9,43.8 L127.8,43.7 L129.6,48.2 L131.4,44.6 L133.2,48.4 L135.0,44.5 L136.9,46.4 L138.7,61.2 L140.5,44.6 L142.3,47.5 L144.1,70.1 L146.0,43.5 L147.8,44.5 L149.6,45.2 L151.4,48.4 L153.2,46.7 L155.1,44.4 L156.9,54.7 L158.7,46.7 L160.5,44.2 L162.3,44.9 L164.2,46.4 L166.0,43.3 L167.8,46.0 L169.6,43.7 L171.4,45.0 L173.3,47.3 L175.1,45.7 L176.9,45.3 L178.7,69.9 L180.6,48.5 L182.4,44.6 L184.2,47.5 L186.0,45.8 L187.8,49.4 L189.7,57.9 L191.5,48.5 L193.3,45.4 L195.1,70.0 L196.9,43.4 L198.8,43.5 L200.6,43.5 L202.4,48.5 L204.2,51.8 L206.0,43.7 L207.9,44.5 L209.7,44.4 L211.5,52.7 L213.3,45.2 L215.1,46.2 L217.0,46.1 L218.8,44.6 L220.6,71.0 L222.4,44.5 L224.2,44.9 L226.1,43.7 L227.9,44.7 L229.7,43.2 L231.5,45.4 L233.4,44.6 L235.2,45.6 L237.0,55.3" style="fill:none;stroke:var(--c2);stroke-width:1.4"/>
+  <text class="t-val" x="300.7" y="109.1" text-anchor="end">peak 13.5 GB on a 48 GB Mac</text>
+</svg>
+</div>
+</div>
+<p class="cap">The dips in speed and memory are the short last steps of an epoch. The gradient norm starts at 25.1 on SQuAD and 6.4 on receipts, where the clip scales the gradient down to norm 1.0. 32 of SQuAD's 141 steps and 7 of the receipts' 106 were clipped.</p>
+
+<div class="tablewrap"><table>
+  <tr><th>Run settings and totals</th><th>SQuAD v1.1</th><th>Receipts (CORD v2)</th></tr>
+  <tr><td>Training examples · epochs · optimizer steps</td><td>2,000 · 1 · 141</td><td>727 · 2 · 106</td></tr>
+  <tr><td>Tokens a step (budget) · longest example</td><td>4,096 · 2,048</td><td>4,096 · 2,048</td></tr>
+  <tr><td>Tokens processed · answer tokens trained on</td><td>492,916 · 20,127</td><td>364,842 · 157,908</td></tr>
+  <tr><td>LoRA rank · alpha · trainable parameters</td><td colspan="2">16 · 32 · 30,474,240, on q, k, v, o, the DeltaNet projections and the MLP, in all 32 layers</td></tr>
+  <tr><td>Optimizer</td><td colspan="2">AdamW, β 0.9 / 0.999, no weight decay, gradient clip 1.0</td></tr>
+  <tr><td>Learning rate</td><td>1e-4 peak, 7 warmup steps, cosine</td><td>1e-4 peak, 5 warmup steps, cosine</td></tr>
+  <tr><td>Best checkpoint (dev loss)</td><td>step 120 (0.105)</td><td>step 100 (0.0081)</td></tr>
+  <tr><td>Minutes training · evaluating</td><td>37.8 · 5.6</td><td>29.9 · 5.2</td></tr>
+  <tr><td>Tokens a second (median step, range)</td><td>220 (184–229)</td><td>207 (167–217)</td></tr>
+  <tr><td>Peak memory</td><td>13.5 GB</td><td>13.5 GB</td></tr>
+</table></div>
+<p class="cap">SQuAD answers are a few words long, so only 4% of its tokens carry loss; receipts answers are whole JSON objects, 43%. Evaluating means the dev loss plus four sample answers, every 40 steps on SQuAD and every 25 on receipts.</p>
+
+<p>Against mlx-lm on the real checkpoints, with the same float32 recurrence, quotebound's log-probabilities agree to within 1e-6, and its greedy continuations are identical on all 7 test prompts for both the 4B and the 9B.</p>
+
+<h2 id="results"><span class="num">09</span>Results on public data</h2>
+<p>Each recipe is one script on public data, with pinned hashes. Each was run once on an Apple M4 Pro (48 GB), macOS 26.6.2, on 20 October 2026. The recipe READMEs say what the numbers do not show.</p>
+<ul>
+  <li><strong>Receipts</strong> (CORD v2): each receipt becomes JSON with every item's name, count and price, and eight totals, with <code>null</code> for a value the receipt does not show. Training used 727 receipts for two epochs (35 minutes). Scoring used 96 test receipts.</li>
+  <li><strong>Extractive QA</strong> (SQuAD v1.1): answer with the shortest stretch of the passage. Training used 2,000 questions for one epoch (43 minutes). Scoring used 300 dev questions.</li>
+</ul>
+
+<figure>
+<div class="panel">
+<h4>What one short fine-tune buys</h4>
+<p class="sub">Qwen3.5-4B, constrained decoding in every row, before and after LoRA.</p>
+<div class="legend"><span><i style="background:var(--base)"></i>base model</span><span><i style="background:var(--accent)"></i>after LoRA</span></div>
+<p class="scrollhint">Swipe sideways to see the whole chart.</p>
+<div class="scrollx">
+<svg viewBox="0 0 640 262" role="img" aria-label="Bar chart: receipts field F1 49.6 to 95.0, receipts all right 6 to 68 percent, SQuAD exact match 15.3 to 89.3, SQuAD F1 25.2 to 94.5">
+  <g class="grid"><path d="M180 20 V226 M290 20 V226 M400 20 V226 M510 20 V226 M620 20 V226"/></g>
+  <text class="t-axis" x="180" y="244" text-anchor="middle">0</text><text class="t-axis" x="290" y="244" text-anchor="middle">25</text><text class="t-axis" x="400" y="244" text-anchor="middle">50</text><text class="t-axis" x="510" y="244" text-anchor="middle">75</text><text class="t-axis" x="620" y="244" text-anchor="middle">100</text>
+  <text class="t-title" x="10" y="44">Receipts · field F1</text>
+  <rect class="bar-base" x="180" y="28" width="218.2" height="15" rx="3"/><text class="t-val" x="404" y="40">49.6</text>
+  <rect class="bar-acc" x="180" y="47" width="418" height="15" rx="3"/><text class="t-val" x="604" y="59">95.0</text>
+  <text class="t-title" x="10" y="96">Receipts · all right, %</text>
+  <rect class="bar-base" x="180" y="80" width="27.5" height="15" rx="3"/><text class="t-val" x="213" y="92">6.3</text>
+  <rect class="bar-acc" x="180" y="99" width="297.9" height="15" rx="3"/><text class="t-val" x="484" y="111">67.7</text>
+  <text class="t-title" x="10" y="148">SQuAD · exact match</text>
+  <rect class="bar-base" x="180" y="132" width="67.3" height="15" rx="3"/><text class="t-val" x="253" y="144">15.3</text>
+  <rect class="bar-acc" x="180" y="151" width="392.9" height="15" rx="3"/><text class="t-val" x="579" y="163">89.3</text>
+  <text class="t-title" x="10" y="200">SQuAD · F1</text>
+  <rect class="bar-base" x="180" y="184" width="110.9" height="15" rx="3"/><text class="t-val" x="297" y="196">25.2</text>
+  <rect class="bar-acc" x="180" y="203" width="415.8" height="15" rx="3"/><text class="t-val" x="602" y="215">94.5</text>
+</svg>
+</div>
+</div>
+<figcaption>"All right" counts receipts where every value and every null is correct (6 → 65 of 96). The base model has not learnt the answer format, so the constraint overrides it on every answer: its rows mostly measure that. SQuAD has been public since 2016, so Qwen3.5 may have seen it in pretraining.</figcaption>
+</figure>
+
+<figure>
+<div class="panel">
+<h4>Exact drafts: same bytes, faster decoding</h4>
+<p class="sub">Decode speed in tokens a second, plain against exact drafts. Every answer is byte-identical between the two.</p>
+<div class="legend"><span><i style="background:var(--base)"></i>plain greedy</span><span><i style="background:var(--c2)"></i>exact drafts</span></div>
+<p class="scrollhint">Swipe sideways to see the whole chart.</p>
+<div class="scrollx">
+<svg viewBox="0 0 640 236" role="img" aria-label="Bar chart: decode tokens per second, receipts 24.4 to 80.4, SQuAD adapter 30.8 to 51.2, SQuAD base 23.5 to 45.1">
+  <g class="grid"><path d="M180 16 V200 M326.7 16 V200 M473.3 16 V200 M620 16 V200"/></g>
+  <text class="t-axis" x="180" y="218" text-anchor="middle">0</text><text class="t-axis" x="326.7" y="218" text-anchor="middle">30</text><text class="t-axis" x="473.3" y="218" text-anchor="middle">60</text><text class="t-axis" x="620" y="218" text-anchor="middle">90 tok/s</text>
+  <text class="t-title" x="10" y="38">Receipts · adapter</text>
+  <text class="t-sub" x="10" y="54">96/96 identical</text>
+  <rect class="bar-base" x="180" y="24" width="119.3" height="15" rx="3"/><text class="t-val" x="305" y="36">24.4</text>
+  <rect class="bar-c2" x="180" y="43" width="393.1" height="15" rx="3"/><text class="t-val" x="579" y="55">80.4</text>
+  <text class="t-title" x="10" y="98">SQuAD · adapter</text>
+  <text class="t-sub" x="10" y="114">300/300 identical</text>
+  <rect class="bar-base" x="180" y="84" width="150.6" height="15" rx="3"/><text class="t-val" x="337" y="96">30.8</text>
+  <rect class="bar-c2" x="180" y="103" width="250.3" height="15" rx="3"/><text class="t-val" x="437" y="115">51.2</text>
+  <text class="t-title" x="10" y="158">SQuAD · base</text>
+  <text class="t-sub" x="10" y="174">300/300 identical</text>
+  <rect class="bar-base" x="180" y="144" width="114.9" height="15" rx="3"/><text class="t-val" x="301" y="156">23.5</text>
+  <rect class="bar-c2" x="180" y="163" width="220.5" height="15" rx="3"/><text class="t-val" x="407" y="175">45.1</text>
+</svg>
+</div>
+</div>
+<figcaption>Drafts help most where answers are long and repeat the input: receipts average 4.73 tokens a pass, SQuAD 2.46. Per input, that is 4.27 → 1.35 s a receipt (p50), and 0.65 → 0.53 s a SQuAD question, where the passage's prefill is the same either way. <a href="#latency">Section 10</a> has the full latency picture.</figcaption>
+</figure>
+
+<h3>The numbers in full</h3>
+<div class="tablewrap"><table>
+  <tr><th>Receipts, 96 test receipts</th><th>Field F1</th><th>All right</th><th>Values not on the receipt</th><th>p50 per receipt</th></tr>
+  <tr><td>Base Qwen3.5-4B, constrained</td><td class="n">49.6</td><td class="n">6</td><td class="n">0 of 600</td><td class="n">2.47 s</td></tr>
+  <tr><td>LoRA adapter, constrained</td><td class="n">95.0</td><td class="n">65</td><td class="n">0 of 1,045</td><td class="n">4.27 s</td></tr>
+  <tr><td>LoRA adapter, constrained, exact drafts</td><td class="n">95.0</td><td class="n">65</td><td class="n">0 of 1,045</td><td class="n">1.35 s</td></tr>
+  <tr><td>LoRA adapter, no constraint</td><td class="n">95.0</td><td class="n">65</td><td class="n">5 of 1,045</td><td class="n">4.31 s</td></tr>
+</table></div>
+<p class="cap">The base model writes fewer values, which is why its time per receipt is shorter. The scores are this recipe's own, not CORD's official metric.</p>
+<div class="tablewrap"><table>
+  <tr><th>SQuAD v1.1, 300 dev questions</th><th>Exact match</th><th>F1</th><th>Quoted from the passage</th><th>p50 per question</th></tr>
+  <tr><td>Base Qwen3.5-4B, constrained</td><td class="n">15.3</td><td class="n">25.2</td><td class="n">300 / 300</td><td class="n">1.04 s</td></tr>
+  <tr><td>LoRA adapter, constrained</td><td class="n">89.3</td><td class="n">94.5</td><td class="n">300 / 300</td><td class="n">0.65 s</td></tr>
+  <tr><td>LoRA adapter, constrained, exact drafts</td><td class="n">89.3</td><td class="n">94.5</td><td class="n">300 / 300</td><td class="n">0.53 s</td></tr>
+</table></div>
+<p class="cap">One run of each recipe on one machine.</p>
+
+
+<h2 id="latency"><span class="num">10</span>Latency, input by input</h2>
+<p>Every row that <code>generate --batch</code> writes carries its own timings: prefill, decode, and the host's time spent choosing the allowed tokens. The charts below are those timings from the recipe runs above, so every point is one real input. They were measured one sequence at a time on the M4 Pro, with the model already loaded. Loading takes 0.4 to 1.4 s, once per batch file. Percentiles are nearest-rank, as the recipes' scorers compute them.</p>
+<div class="legend"><span><i style="background:var(--c2)"></i>adapter, exact drafts</span><span><i style="background:var(--accent)"></i>adapter, plain</span><span><i style="background:var(--warn)"></i>adapter, no constraint</span><span><i style="background:var(--faint)"></i>base model</span></div>
+<div class="dash">
+<div class="panel"><h4>Receipts: time per receipt</h4><p class="sub">Share of the 96 receipts answered within each time. Dots mark p50: 1.35 s with drafts, 4.27 s plain.</p>
+<svg viewBox="0 0 320 210" role="img" aria-label="Share of the 96 receipts answered within a given time: adapter with exact drafts, adapter plain, adapter without the constraint, base model">
+  <g class="grid">
+  <path d="M44 180.0 H308"/>
+  <path d="M44 140.0 H308"/>
+  <path d="M44 100.0 H308"/>
+  <path d="M44 60.0 H308"/>
+  <path d="M44 20.0 H308"/>
+  </g>
+  <text class="t-axis" x="38" y="183.5" text-anchor="end">0%</text>
+  <text class="t-axis" x="38" y="143.5" text-anchor="end"></text>
+  <text class="t-axis" x="38" y="103.5" text-anchor="end">50%</text>
+  <text class="t-axis" x="38" y="63.5" text-anchor="end"></text>
+  <text class="t-axis" x="38" y="23.5" text-anchor="end">100%</text>
+  <text class="t-axis" x="44.0" y="195" text-anchor="middle">0</text>
+  <text class="t-axis" x="85.9" y="195" text-anchor="middle">2</text>
+  <text class="t-axis" x="127.8" y="195" text-anchor="middle">4</text>
+  <text class="t-axis" x="169.7" y="195" text-anchor="middle">6</text>
+  <text class="t-axis" x="211.6" y="195" text-anchor="middle">8</text>
+  <text class="t-axis" x="253.5" y="195" text-anchor="middle">10</text>
+  <text class="t-axis" x="295.4" y="195" text-anchor="middle">12</text>
+  <text class="t-axis" x="308" y="208" text-anchor="end">seconds per receipt</text>
+  <path d="M44.0,180.0 L87.6,180.0 L87.6,178.3 L87.8,178.3 L87.8,176.7 L88.0,176.7 L88.0,175.0 L88.5,175.0 L88.5,173.3 L88.6,173.3 L88.6,171.7 L88.9,171.7 L88.9,170.0 L89.4,170.0 L89.4,168.3 L89.7,168.3 L89.7,166.7 L89.8,166.7 L89.8,165.0 L89.8,165.0 L89.8,163.3 L89.9,163.3 L89.9,161.7 L90.2,161.7 L90.2,160.0 L90.3,160.0 L90.3,158.3 L90.3,158.3 L90.3,156.7 L90.6,156.7 L90.6,155.0 L90.9,155.0 L90.9,153.3 L90.9,153.3 L90.9,151.7 L90.9,151.7 L90.9,150.0 L91.0,150.0 L91.0,148.3 L91.0,148.3 L91.0,146.7 L91.2,146.7 L91.2,145.0 L91.4,145.0 L91.4,143.3 L91.5,143.3 L91.5,141.7 L91.6,141.7 L91.6,140.0 L91.6,140.0 L91.6,138.3 L91.6,138.3 L91.6,136.7 L91.7,136.7 L91.7,135.0 L91.9,135.0 L91.9,133.3 L92.0,133.3 L92.0,131.7 L92.0,131.7 L92.0,130.0 L92.1,130.0 L92.1,128.3 L92.1,128.3 L92.1,126.7 L92.2,126.7 L92.2,125.0 L92.2,125.0 L92.2,123.3 L92.2,123.3 L92.2,121.7 L92.4,121.7 L92.4,120.0 L93.0,120.0 L93.0,118.3 L93.0,118.3 L93.0,116.7 L93.0,116.7 L93.0,115.0 L93.1,115.0 L93.1,113.3 L93.2,113.3 L93.2,111.7 L94.0,111.7 L94.0,110.0 L94.4,110.0 L94.4,108.3 L95.2,108.3 L95.2,106.7 L95.2,106.7 L95.2,105.0 L95.3,105.0 L95.3,103.3 L95.3,103.3 L95.3,101.7 L95.5,101.7 L95.5,100.0 L95.8,100.0 L95.8,98.3 L111.8,98.3 L111.8,96.7 L113.2,96.7 L113.2,95.0 L120.8,95.0 L120.8,93.3 L123.0,93.3 L123.0,91.7 L123.5,91.7 L123.5,90.0 L126.7,90.0 L126.7,88.3 L130.7,88.3 L130.7,86.7 L136.0,86.7 L136.0,85.0 L136.3,85.0 L136.3,83.3 L136.9,83.3 L136.9,81.7 L140.2,81.7 L140.2,80.0 L144.2,80.0 L144.2,78.3 L144.2,78.3 L144.2,76.7 L144.4,76.7 L144.4,75.0 L144.7,75.0 L144.7,73.3 L145.4,73.3 L145.4,71.7 L147.9,71.7 L147.9,70.0 L148.1,70.0 L148.1,68.3 L148.5,68.3 L148.5,66.7 L149.8,66.7 L149.8,65.0 L150.6,65.0 L150.6,63.3 L153.2,63.3 L153.2,61.7 L155.4,61.7 L155.4,60.0 L156.4,60.0 L156.4,58.3 L160.2,58.3 L160.2,56.7 L160.7,56.7 L160.7,55.0 L163.0,55.0 L163.0,53.3 L164.3,53.3 L164.3,51.7 L168.1,51.7 L168.1,50.0 L168.5,50.0 L168.5,48.3 L169.8,48.3 L169.8,46.7 L170.1,46.7 L170.1,45.0 L170.8,45.0 L170.8,43.3 L171.6,43.3 L171.6,41.7 L171.8,41.7 L171.8,40.0 L173.0,40.0 L173.0,38.3 L177.9,38.3 L177.9,36.7 L179.9,36.7 L179.9,35.0 L185.0,35.0 L185.0,33.3 L193.0,33.3 L193.0,31.7 L199.5,31.7 L199.5,30.0 L203.4,30.0 L203.4,28.3 L213.3,28.3 L213.3,26.7 L218.8,26.7 L218.8,25.0 L223.6,25.0 L223.6,23.3 L265.4,23.3 L265.4,21.7 L300.3,21.7 L300.3,20.0" style="fill:none;stroke:var(--faint);stroke-width:1.4;stroke-dasharray:3 3"/>
+  <path d="M44.0,180.0 L108.1,180.0 L108.1,178.3 L108.1,178.3 L108.1,176.7 L109.3,176.7 L109.3,175.0 L109.5,175.0 L109.5,173.3 L109.6,173.3 L109.6,171.7 L109.8,171.7 L109.8,170.0 L110.8,170.0 L110.8,168.3 L111.1,168.3 L111.1,166.7 L111.2,166.7 L111.2,165.0 L111.4,165.0 L111.4,163.3 L111.5,163.3 L111.5,161.7 L112.0,161.7 L112.0,160.0 L112.1,160.0 L112.1,158.3 L112.3,158.3 L112.3,156.7 L112.5,156.7 L112.5,155.0 L113.2,155.0 L113.2,153.3 L113.2,153.3 L113.2,151.7 L115.2,151.7 L115.2,150.0 L116.0,150.0 L116.0,148.3 L116.4,148.3 L116.4,146.7 L116.7,146.7 L116.7,145.0 L116.9,145.0 L116.9,143.3 L117.1,143.3 L117.1,141.7 L117.3,141.7 L117.3,140.0 L117.7,140.0 L117.7,138.3 L117.8,138.3 L117.8,136.7 L117.9,136.7 L117.9,135.0 L118.1,135.0 L118.1,133.3 L118.6,133.3 L118.6,131.7 L119.5,131.7 L119.5,130.0 L120.3,130.0 L120.3,128.3 L121.8,128.3 L121.8,126.7 L122.1,126.7 L122.1,125.0 L122.5,125.0 L122.5,123.3 L122.8,123.3 L122.8,121.7 L123.9,121.7 L123.9,120.0 L124.6,120.0 L124.6,118.3 L124.6,118.3 L124.6,116.7 L127.0,116.7 L127.0,115.0 L127.5,115.0 L127.5,113.3 L127.7,113.3 L127.7,111.7 L128.0,111.7 L128.0,110.0 L128.1,110.0 L128.1,108.3 L128.1,108.3 L128.1,106.7 L128.9,106.7 L128.9,105.0 L130.8,105.0 L130.8,103.3 L131.0,103.3 L131.0,101.7 L132.9,101.7 L132.9,100.0 L134.4,100.0 L134.4,98.3 L134.5,98.3 L134.5,96.7 L135.0,96.7 L135.0,95.0 L135.7,95.0 L135.7,93.3 L137.5,93.3 L137.5,91.7 L137.9,91.7 L137.9,90.0 L138.4,90.0 L138.4,88.3 L138.6,88.3 L138.6,86.7 L138.7,86.7 L138.7,85.0 L139.0,85.0 L139.0,83.3 L139.1,83.3 L139.1,81.7 L139.5,81.7 L139.5,80.0 L139.5,80.0 L139.5,78.3 L140.4,78.3 L140.4,76.7 L143.0,76.7 L143.0,75.0 L144.8,75.0 L144.8,73.3 L149.0,73.3 L149.0,71.7 L150.3,71.7 L150.3,70.0 L152.8,70.0 L152.8,68.3 L153.8,68.3 L153.8,66.7 L154.1,66.7 L154.1,65.0 L154.2,65.0 L154.2,63.3 L154.8,63.3 L154.8,61.7 L155.6,61.7 L155.6,60.0 L156.3,60.0 L156.3,58.3 L156.5,58.3 L156.5,56.7 L158.5,56.7 L158.5,55.0 L161.6,55.0 L161.6,53.3 L162.3,53.3 L162.3,51.7 L162.9,51.7 L162.9,50.0 L163.6,50.0 L163.6,48.3 L170.3,48.3 L170.3,46.7 L172.3,46.7 L172.3,45.0 L172.3,45.0 L172.3,43.3 L173.9,43.3 L173.9,41.7 L180.6,41.7 L180.6,40.0 L186.4,40.0 L186.4,38.3 L193.1,38.3 L193.1,36.7 L194.6,36.7 L194.6,35.0 L201.9,35.0 L201.9,33.3 L214.4,33.3 L214.4,31.7 L221.3,31.7 L221.3,30.0 L249.1,30.0 L249.1,28.3 L262.1,28.3 L262.1,26.7 L265.8,26.7 L265.8,25.0 L267.3,25.0 L267.3,23.3 L280.3,23.3 L280.3,21.7 L299.4,21.7 L299.4,20.0" style="fill:none;stroke:var(--warn);stroke-width:1.4;stroke-dasharray:5 4"/>
+  <path d="M44.0,180.0 L106.6,180.0 L106.6,178.3 L107.1,178.3 L107.1,176.7 L108.9,176.7 L108.9,175.0 L109.0,175.0 L109.0,173.3 L109.1,173.3 L109.1,171.7 L109.4,171.7 L109.4,170.0 L109.7,170.0 L109.7,168.3 L109.8,168.3 L109.8,166.7 L110.1,166.7 L110.1,165.0 L110.4,165.0 L110.4,163.3 L110.5,163.3 L110.5,161.7 L111.4,161.7 L111.4,160.0 L111.7,160.0 L111.7,158.3 L111.7,158.3 L111.7,156.7 L112.6,156.7 L112.6,155.0 L113.0,155.0 L113.0,153.3 L113.4,153.3 L113.4,151.7 L114.6,151.7 L114.6,150.0 L115.3,150.0 L115.3,148.3 L115.6,148.3 L115.6,146.7 L116.0,146.7 L116.0,145.0 L116.4,145.0 L116.4,143.3 L116.7,143.3 L116.7,141.7 L116.8,141.7 L116.8,140.0 L116.9,140.0 L116.9,138.3 L117.0,138.3 L117.0,136.7 L117.5,136.7 L117.5,135.0 L117.6,135.0 L117.6,133.3 L118.5,133.3 L118.5,131.7 L119.2,131.7 L119.2,130.0 L120.0,130.0 L120.0,128.3 L121.4,128.3 L121.4,126.7 L122.0,126.7 L122.0,125.0 L122.1,125.0 L122.1,123.3 L123.1,123.3 L123.1,121.7 L123.5,121.7 L123.5,120.0 L124.0,120.0 L124.0,118.3 L124.2,118.3 L124.2,116.7 L125.9,116.7 L125.9,115.0 L126.0,115.0 L126.0,113.3 L127.3,113.3 L127.3,111.7 L127.5,111.7 L127.5,110.0 L127.8,110.0 L127.8,108.3 L128.4,108.3 L128.4,106.7 L128.4,106.7 L128.4,105.0 L128.5,105.0 L128.5,103.3 L130.9,103.3 L130.9,101.7 L131.7,101.7 L131.7,100.0 L133.5,100.0 L133.5,98.3 L133.9,98.3 L133.9,96.7 L135.2,96.7 L135.2,95.0 L136.2,95.0 L136.2,93.3 L136.5,93.3 L136.5,91.7 L136.8,91.7 L136.8,90.0 L137.1,90.0 L137.1,88.3 L137.2,88.3 L137.2,86.7 L137.3,86.7 L137.3,85.0 L137.9,85.0 L137.9,83.3 L138.0,83.3 L138.0,81.7 L138.5,81.7 L138.5,80.0 L139.0,80.0 L139.0,78.3 L139.3,78.3 L139.3,76.7 L142.0,76.7 L142.0,75.0 L142.6,75.0 L142.6,73.3 L144.2,73.3 L144.2,71.7 L148.0,71.7 L148.0,70.0 L150.0,70.0 L150.0,68.3 L152.5,68.3 L152.5,66.7 L153.1,66.7 L153.1,65.0 L153.9,65.0 L153.9,63.3 L154.0,63.3 L154.0,61.7 L154.7,61.7 L154.7,60.0 L155.4,60.0 L155.4,58.3 L158.1,58.3 L158.1,56.7 L159.0,56.7 L159.0,55.0 L160.1,55.0 L160.1,53.3 L160.5,53.3 L160.5,51.7 L160.8,51.7 L160.8,50.0 L160.9,50.0 L160.9,48.3 L169.2,48.3 L169.2,46.7 L170.1,46.7 L170.1,45.0 L170.6,45.0 L170.6,43.3 L174.9,43.3 L174.9,41.7 L180.0,41.7 L180.0,40.0 L184.0,40.0 L184.0,38.3 L191.4,38.3 L191.4,36.7 L194.3,36.7 L194.3,35.0 L200.1,35.0 L200.1,33.3 L215.5,33.3 L215.5,31.7 L219.7,31.7 L219.7,30.0 L246.3,30.0 L246.3,28.3 L262.1,28.3 L262.1,26.7 L262.3,26.7 L262.3,25.0 L268.4,25.0 L268.4,23.3 L280.0,23.3 L280.0,21.7 L299.6,21.7 L299.6,20.0" style="fill:none;stroke:var(--accent);stroke-width:1.8"/>
+  <path d="M44.0,180.0 L61.1,180.0 L61.1,178.3 L62.4,178.3 L62.4,176.7 L62.5,176.7 L62.5,175.0 L62.6,175.0 L62.6,173.3 L62.7,173.3 L62.7,171.7 L63.0,171.7 L63.0,170.0 L63.5,170.0 L63.5,168.3 L63.7,168.3 L63.7,166.7 L64.0,166.7 L64.0,165.0 L64.2,165.0 L64.2,163.3 L64.9,163.3 L64.9,161.7 L64.9,161.7 L64.9,160.0 L65.0,160.0 L65.0,158.3 L65.1,158.3 L65.1,156.7 L65.2,156.7 L65.2,155.0 L65.2,155.0 L65.2,153.3 L65.2,153.3 L65.2,151.7 L65.4,151.7 L65.4,150.0 L65.4,150.0 L65.4,148.3 L65.5,148.3 L65.5,146.7 L65.7,146.7 L65.7,145.0 L65.9,145.0 L65.9,143.3 L66.1,143.3 L66.1,141.7 L66.2,141.7 L66.2,140.0 L66.4,140.0 L66.4,138.3 L66.7,138.3 L66.7,136.7 L67.3,136.7 L67.3,135.0 L67.5,135.0 L67.5,133.3 L67.6,133.3 L67.6,131.7 L67.7,131.7 L67.7,130.0 L67.7,130.0 L67.7,128.3 L67.8,128.3 L67.8,126.7 L68.1,126.7 L68.1,125.0 L68.6,125.0 L68.6,123.3 L68.6,123.3 L68.6,121.7 L68.8,121.7 L68.8,120.0 L68.8,120.0 L68.8,118.3 L68.9,118.3 L68.9,116.7 L69.2,116.7 L69.2,115.0 L70.5,115.0 L70.5,113.3 L70.6,113.3 L70.6,111.7 L70.8,111.7 L70.8,110.0 L70.9,110.0 L70.9,108.3 L71.2,108.3 L71.2,106.7 L71.2,106.7 L71.2,105.0 L71.7,105.0 L71.7,103.3 L72.0,103.3 L72.0,101.7 L72.0,101.7 L72.0,100.0 L72.2,100.0 L72.2,98.3 L72.3,98.3 L72.3,96.7 L72.4,96.7 L72.4,95.0 L73.7,95.0 L73.7,93.3 L73.8,93.3 L73.8,91.7 L74.0,91.7 L74.0,90.0 L74.2,90.0 L74.2,88.3 L74.4,88.3 L74.4,86.7 L74.7,86.7 L74.7,85.0 L75.2,85.0 L75.2,83.3 L75.8,83.3 L75.8,81.7 L76.1,81.7 L76.1,80.0 L76.3,80.0 L76.3,78.3 L76.5,78.3 L76.5,76.7 L76.7,76.7 L76.7,75.0 L77.0,75.0 L77.0,73.3 L77.7,73.3 L77.7,71.7 L77.9,71.7 L77.9,70.0 L78.0,70.0 L78.0,68.3 L78.4,68.3 L78.4,66.7 L78.7,66.7 L78.7,65.0 L79.2,65.0 L79.2,63.3 L79.8,63.3 L79.8,61.7 L79.8,61.7 L79.8,60.0 L80.1,60.0 L80.1,58.3 L80.9,58.3 L80.9,56.7 L81.0,56.7 L81.0,55.0 L81.7,55.0 L81.7,53.3 L84.1,53.3 L84.1,51.7 L84.8,51.7 L84.8,50.0 L86.7,50.0 L86.7,48.3 L87.5,48.3 L87.5,46.7 L90.8,46.7 L90.8,45.0 L91.7,45.0 L91.7,43.3 L91.9,43.3 L91.9,41.7 L94.1,41.7 L94.1,40.0 L96.6,40.0 L96.6,38.3 L97.4,38.3 L97.4,36.7 L98.2,36.7 L98.2,35.0 L103.8,35.0 L103.8,33.3 L106.4,33.3 L106.4,31.7 L107.4,31.7 L107.4,30.0 L116.9,30.0 L116.9,28.3 L118.0,28.3 L118.0,26.7 L130.3,26.7 L130.3,25.0 L132.1,25.0 L132.1,23.3 L135.2,23.3 L135.2,21.7 L143.2,21.7 L143.2,20.0" style="fill:none;stroke:var(--c2);stroke-width:1.8"/>
+  <circle cx="72.2" cy="100.0" r="3.6" style="fill:var(--card);stroke:var(--c2);stroke-width:2"/><text class="t-val" x="78.2" y="104.0" text-anchor="start" style="fill:var(--c2)"></text>
+  <circle cx="133.5" cy="100.0" r="3.6" style="fill:var(--card);stroke:var(--accent);stroke-width:2"/><text class="t-val" x="139.5" y="104.0" text-anchor="start" style="fill:var(--accent)"></text>
+</svg>
+</div>
+<div class="panel"><h4>SQuAD: time per question</h4><p class="sub">Share of the 300 questions answered within each time. Dots mark p50: 0.53 s with drafts, 0.65 s plain.</p>
+<svg viewBox="0 0 320 210" role="img" aria-label="Share of the 300 SQuAD questions answered within a given time: adapter with exact drafts, adapter plain, base model">
+  <g class="grid">
+  <path d="M44 180.0 H308"/>
+  <path d="M44 140.0 H308"/>
+  <path d="M44 100.0 H308"/>
+  <path d="M44 60.0 H308"/>
+  <path d="M44 20.0 H308"/>
+  </g>
+  <text class="t-axis" x="38" y="183.5" text-anchor="end">0%</text>
+  <text class="t-axis" x="38" y="143.5" text-anchor="end"></text>
+  <text class="t-axis" x="38" y="103.5" text-anchor="end">50%</text>
+  <text class="t-axis" x="38" y="63.5" text-anchor="end"></text>
+  <text class="t-axis" x="38" y="23.5" text-anchor="end">100%</text>
+  <text class="t-axis" x="44.0" y="195" text-anchor="middle">0</text>
+  <text class="t-axis" x="88.0" y="195" text-anchor="middle">0.5</text>
+  <text class="t-axis" x="132.0" y="195" text-anchor="middle">1</text>
+  <text class="t-axis" x="176.0" y="195" text-anchor="middle">1.5</text>
+  <text class="t-axis" x="220.0" y="195" text-anchor="middle">2</text>
+  <text class="t-axis" x="264.0" y="195" text-anchor="middle">2.5</text>
+  <text class="t-axis" x="308.0" y="195" text-anchor="middle">3</text>
+  <text class="t-axis" x="308" y="208" text-anchor="end">seconds per question</text>
+  <path d="M44.0,180.0 L82.1,180.0 L82.1,179.5 L82.4,179.5 L82.4,178.9 L86.8,178.9 L86.8,178.4 L87.2,178.4 L87.2,177.9 L87.9,177.9 L87.9,177.3 L88.0,177.3 L88.0,176.8 L88.0,176.8 L88.0,176.3 L88.1,176.3 L88.1,175.7 L88.1,175.7 L88.1,175.2 L88.1,175.2 L88.1,174.7 L88.1,174.7 L88.1,174.1 L88.2,174.1 L88.2,173.6 L88.3,173.6 L88.3,173.1 L88.4,173.1 L88.4,172.5 L88.4,172.5 L88.4,172.0 L88.5,172.0 L88.5,171.5 L88.7,171.5 L88.7,170.9 L90.4,170.9 L90.4,170.4 L91.1,170.4 L91.1,169.9 L91.5,169.9 L91.5,169.3 L91.6,169.3 L91.6,168.8 L92.9,168.8 L92.9,168.3 L93.0,168.3 L93.0,167.7 L93.0,167.7 L93.0,167.2 L93.0,167.2 L93.0,166.7 L93.1,166.7 L93.1,166.1 L93.2,166.1 L93.2,165.6 L93.2,165.6 L93.2,165.1 L93.2,165.1 L93.2,164.5 L93.3,164.5 L93.3,164.0 L93.4,164.0 L93.4,163.5 L93.5,163.5 L93.5,162.9 L93.5,162.9 L93.5,162.4 L93.5,162.4 L93.5,161.9 L93.6,161.9 L93.6,161.3 L93.7,161.3 L93.7,160.8 L93.8,160.8 L93.8,160.3 L93.8,160.3 L93.8,159.7 L94.0,159.7 L94.0,159.2 L94.1,159.2 L94.1,158.7 L94.4,158.7 L94.4,158.1 L95.6,158.1 L95.6,157.6 L95.6,157.6 L95.6,157.1 L96.2,157.1 L96.2,156.5 L96.6,156.5 L96.6,156.0 L96.7,156.0 L96.7,155.5 L96.8,155.5 L96.8,154.9 L98.4,154.9 L98.4,154.4 L99.7,154.4 L99.7,153.9 L99.8,153.9 L99.8,153.3 L100.0,153.3 L100.0,152.8 L100.2,152.8 L100.2,152.3 L100.2,152.3 L100.2,151.7 L100.6,151.7 L100.6,151.2 L100.9,151.2 L100.9,150.7 L102.3,150.7 L102.3,150.1 L103.0,150.1 L103.0,149.6 L103.3,149.6 L103.3,149.1 L103.4,149.1 L103.4,148.5 L103.5,148.5 L103.5,148.0 L103.5,148.0 L103.5,147.5 L103.6,147.5 L103.6,146.9 L103.7,146.9 L103.7,146.4 L103.8,146.4 L103.8,145.9 L103.8,145.9 L103.8,145.3 L104.2,145.3 L104.2,144.8 L104.2,144.8 L104.2,144.3 L104.2,144.3 L104.2,143.7 L105.2,143.7 L105.2,143.2 L105.5,143.2 L105.5,142.7 L105.7,142.7 L105.7,142.1 L105.7,142.1 L105.7,141.6 L106.7,141.6 L106.7,141.1 L106.8,141.1 L106.8,140.5 L106.9,140.5 L106.9,140.0 L107.0,140.0 L107.0,139.5 L107.0,139.5 L107.0,138.9 L107.1,138.9 L107.1,138.4 L107.1,138.4 L107.1,137.9 L107.2,137.9 L107.2,137.3 L107.2,137.3 L107.2,136.8 L107.2,136.8 L107.2,136.3 L107.2,136.3 L107.2,135.7 L107.6,135.7 L107.6,135.2 L107.8,135.2 L107.8,134.7 L108.8,134.7 L108.8,134.1 L110.2,134.1 L110.2,133.6 L110.5,133.6 L110.5,133.1 L110.6,133.1 L110.6,132.5 L110.9,132.5 L110.9,132.0 L111.6,132.0 L111.6,131.5 L112.2,131.5 L112.2,130.9 L113.0,130.9 L113.0,130.4 L113.6,130.4 L113.6,129.9 L114.4,129.9 L114.4,129.3 L116.0,129.3 L116.0,128.8 L116.2,128.8 L116.2,128.3 L116.9,128.3 L116.9,127.7 L117.4,127.7 L117.4,127.2 L117.4,127.2 L117.4,126.7 L117.4,126.7 L117.4,126.1 L117.5,126.1 L117.5,125.6 L117.6,125.6 L117.6,125.1 L117.8,125.1 L117.8,124.5 L117.8,124.5 L117.8,124.0 L119.3,124.0 L119.3,123.5 L120.5,123.5 L120.5,122.9 L120.8,122.9 L120.8,122.4 L120.9,122.4 L120.9,121.9 L121.6,121.9 L121.6,121.3 L122.6,121.3 L122.6,120.8 L123.3,120.8 L123.3,120.3 L123.9,120.3 L123.9,119.7 L124.2,119.7 L124.2,119.2 L124.4,119.2 L124.4,118.7 L124.5,118.7 L124.5,118.1 L124.6,118.1 L124.6,117.6 L125.5,117.6 L125.5,117.1 L125.5,117.1 L125.5,116.5 L125.6,116.5 L125.6,116.0 L126.0,116.0 L126.0,115.5 L126.0,115.5 L126.0,114.9 L126.5,114.9 L126.5,114.4 L127.3,114.4 L127.3,113.9 L127.9,113.9 L127.9,113.3 L128.2,113.3 L128.2,112.8 L130.0,112.8 L130.0,112.3 L130.5,112.3 L130.5,111.7 L130.9,111.7 L130.9,111.2 L130.9,111.2 L130.9,110.7 L131.3,110.7 L131.3,110.1 L131.4,110.1 L131.4,109.6 L131.5,109.6 L131.5,109.1 L131.5,109.1 L131.5,108.5 L131.9,108.5 L131.9,108.0 L131.9,108.0 L131.9,107.5 L132.9,107.5 L132.9,106.9 L132.9,106.9 L132.9,106.4 L133.7,106.4 L133.7,105.9 L133.8,105.9 L133.8,105.3 L134.2,105.3 L134.2,104.8 L134.4,104.8 L134.4,104.3 L134.5,104.3 L134.5,103.7 L134.7,103.7 L134.7,103.2 L134.7,103.2 L134.7,102.7 L134.8,102.7 L134.8,102.1 L135.0,102.1 L135.0,101.6 L135.0,101.6 L135.0,101.1 L135.2,101.1 L135.2,100.5 L135.3,100.5 L135.3,100.0 L135.3,100.0 L135.3,99.5 L136.3,99.5 L136.3,98.9 L136.4,98.9 L136.4,98.4 L136.6,98.4 L136.6,97.9 L138.0,97.9 L138.0,97.3 L138.1,97.3 L138.1,96.8 L138.3,96.8 L138.3,96.3 L138.4,96.3 L138.4,95.7 L138.5,95.7 L138.5,95.2 L138.6,95.2 L138.6,94.7 L139.3,94.7 L139.3,94.1 L139.8,94.1 L139.8,93.6 L140.1,93.6 L140.1,93.1 L140.5,93.1 L140.5,92.5 L140.8,92.5 L140.8,92.0 L141.3,92.0 L141.3,91.5 L141.3,91.5 L141.3,90.9 L141.4,90.9 L141.4,90.4 L141.5,90.4 L141.5,89.9 L141.9,89.9 L141.9,89.3 L141.9,89.3 L141.9,88.8 L141.9,88.8 L141.9,88.3 L142.0,88.3 L142.0,87.7 L142.6,87.7 L142.6,87.2 L142.8,87.2 L142.8,86.7 L143.1,86.7 L143.1,86.1 L143.4,86.1 L143.4,85.6 L145.0,85.6 L145.0,85.1 L145.3,85.1 L145.3,84.5 L145.3,84.5 L145.3,84.0 L145.5,84.0 L145.5,83.5 L145.8,83.5 L145.8,82.9 L146.8,82.9 L146.8,82.4 L148.3,82.4 L148.3,81.9 L148.4,81.9 L148.4,81.3 L148.4,81.3 L148.4,80.8 L148.5,80.8 L148.5,80.3 L148.6,80.3 L148.6,79.7 L149.0,79.7 L149.0,79.2 L149.1,79.2 L149.1,78.7 L149.5,78.7 L149.5,78.1 L149.5,78.1 L149.5,77.6 L149.8,77.6 L149.8,77.1 L150.2,77.1 L150.2,76.5 L150.5,76.5 L150.5,76.0 L151.1,76.0 L151.1,75.5 L151.4,75.5 L151.4,74.9 L151.8,74.9 L151.8,74.4 L151.9,74.4 L151.9,73.9 L151.9,73.9 L151.9,73.3 L152.0,73.3 L152.0,72.8 L152.2,72.8 L152.2,72.3 L152.6,72.3 L152.6,71.7 L152.6,71.7 L152.6,71.2 L152.9,71.2 L152.9,70.7 L153.5,70.7 L153.5,70.1 L153.8,70.1 L153.8,69.6 L155.1,69.6 L155.1,69.1 L155.8,69.1 L155.8,68.5 L155.8,68.5 L155.8,68.0 L156.0,68.0 L156.0,67.5 L156.0,67.5 L156.0,66.9 L156.3,66.9 L156.3,66.4 L156.3,66.4 L156.3,65.9 L156.5,65.9 L156.5,65.3 L158.2,65.3 L158.2,64.8 L158.3,64.8 L158.3,64.3 L158.5,64.3 L158.5,63.7 L159.3,63.7 L159.3,63.2 L159.3,63.2 L159.3,62.7 L159.7,62.7 L159.7,62.1 L160.4,62.1 L160.4,61.6 L160.4,61.6 L160.4,61.1 L160.6,61.1 L160.6,60.5 L161.3,60.5 L161.3,60.0 L161.6,60.0 L161.6,59.5 L161.7,59.5 L161.7,58.9 L161.8,58.9 L161.8,58.4 L162.1,58.4 L162.1,57.9 L162.1,57.9 L162.1,57.3 L162.1,57.3 L162.1,56.8 L162.1,56.8 L162.1,56.3 L162.2,56.3 L162.2,55.7 L163.2,55.7 L163.2,55.2 L163.2,55.2 L163.2,54.7 L163.3,54.7 L163.3,54.1 L163.4,54.1 L163.4,53.6 L163.7,53.6 L163.7,53.1 L163.9,53.1 L163.9,52.5 L164.1,52.5 L164.1,52.0 L164.1,52.0 L164.1,51.5 L165.0,51.5 L165.0,50.9 L165.0,50.9 L165.0,50.4 L165.1,50.4 L165.1,49.9 L165.2,49.9 L165.2,49.3 L165.4,49.3 L165.4,48.8 L165.5,48.8 L165.5,48.3 L165.7,48.3 L165.7,47.7 L165.8,47.7 L165.8,47.2 L165.9,47.2 L165.9,46.7 L166.4,46.7 L166.4,46.1 L166.8,46.1 L166.8,45.6 L167.3,45.6 L167.3,45.1 L168.8,45.1 L168.8,44.5 L169.5,44.5 L169.5,44.0 L170.1,44.0 L170.1,43.5 L170.3,43.5 L170.3,42.9 L171.5,42.9 L171.5,42.4 L171.7,42.4 L171.7,41.9 L172.2,41.9 L172.2,41.3 L172.3,41.3 L172.3,40.8 L175.4,40.8 L175.4,40.3 L175.5,40.3 L175.5,39.7 L175.8,39.7 L175.8,39.2 L176.0,39.2 L176.0,38.7 L176.4,38.7 L176.4,38.1 L176.4,38.1 L176.4,37.6 L176.7,37.6 L176.7,37.1 L181.9,37.1 L181.9,36.5 L182.1,36.5 L182.1,36.0 L182.7,36.0 L182.7,35.5 L183.4,35.5 L183.4,34.9 L183.6,34.9 L183.6,34.4 L185.8,34.4 L185.8,33.9 L185.9,33.9 L185.9,33.3 L188.3,33.3 L188.3,32.8 L189.0,32.8 L189.0,32.3 L189.8,32.3 L189.8,31.7 L191.6,31.7 L191.6,31.2 L196.9,31.2 L196.9,30.7 L200.2,30.7 L200.2,30.1 L201.8,30.1 L201.8,29.6 L203.6,29.6 L203.6,29.1 L207.8,29.1 L207.8,28.5 L213.4,28.5 L213.4,28.0 L220.5,28.0 L220.5,27.5 L226.1,27.5 L226.1,26.9 L238.2,26.9 L238.2,26.4 L244.1,26.4 L244.1,25.9 L244.6,25.9 L244.6,25.3 L245.2,25.3 L245.2,24.8 L253.0,24.8 L253.0,24.3 L257.9,24.3 L257.9,23.7 L259.9,23.7 L259.9,23.2 L260.8,23.2 L260.8,22.7 L267.3,22.7 L267.3,22.1 L269.4,22.1 L269.4,21.6 L275.1,21.6 L275.1,21.1 L275.6,21.1 L275.6,20.5 L296.1,20.5 L296.1,20.0" style="fill:none;stroke:var(--faint);stroke-width:1.4;stroke-dasharray:3 3"/>
+  <path d="M44.0,180.0 L77.1,180.0 L77.1,179.5 L82.4,179.5 L82.4,178.9 L83.4,178.9 L83.4,178.4 L83.9,178.4 L83.9,177.9 L84.0,177.9 L84.0,177.3 L84.1,177.3 L84.1,176.8 L84.1,176.8 L84.1,176.3 L84.4,176.3 L84.4,175.7 L84.6,175.7 L84.6,175.2 L84.6,175.2 L84.6,174.7 L85.0,174.7 L85.0,174.1 L85.8,174.1 L85.8,173.6 L85.8,173.6 L85.8,173.1 L87.0,173.1 L87.0,172.5 L87.2,172.5 L87.2,172.0 L87.3,172.0 L87.3,171.5 L87.3,171.5 L87.3,170.9 L87.3,170.9 L87.3,170.4 L87.3,170.4 L87.3,169.9 L87.4,169.9 L87.4,169.3 L87.4,169.3 L87.4,168.8 L87.6,168.8 L87.6,168.3 L87.6,168.3 L87.6,167.7 L87.7,167.7 L87.7,167.2 L88.0,167.2 L88.0,166.7 L88.0,166.7 L88.0,166.1 L88.1,166.1 L88.1,165.6 L89.1,165.6 L89.1,165.1 L89.2,165.1 L89.2,164.5 L89.2,164.5 L89.2,164.0 L89.4,164.0 L89.4,163.5 L89.4,163.5 L89.4,162.9 L89.5,162.9 L89.5,162.4 L89.6,162.4 L89.6,161.9 L89.7,161.9 L89.7,161.3 L89.7,161.3 L89.7,160.8 L90.0,160.8 L90.0,160.3 L90.3,160.3 L90.3,159.7 L90.6,159.7 L90.6,159.2 L90.6,159.2 L90.6,158.7 L90.8,158.7 L90.8,158.1 L90.8,158.1 L90.8,157.6 L90.8,157.6 L90.8,157.1 L90.9,157.1 L90.9,156.5 L91.0,156.5 L91.0,156.0 L91.3,156.0 L91.3,155.5 L92.2,155.5 L92.2,154.9 L92.3,154.9 L92.3,154.4 L92.7,154.4 L92.7,153.9 L92.7,153.9 L92.7,153.3 L92.7,153.3 L92.7,152.8 L92.8,152.8 L92.8,152.3 L92.9,152.3 L92.9,151.7 L92.9,151.7 L92.9,151.2 L93.0,151.2 L93.0,150.7 L93.0,150.7 L93.0,150.1 L93.1,150.1 L93.1,149.6 L93.1,149.6 L93.1,149.1 L93.1,149.1 L93.1,148.5 L93.2,148.5 L93.2,148.0 L93.3,148.0 L93.3,147.5 L93.4,147.5 L93.4,146.9 L93.4,146.9 L93.4,146.4 L93.4,146.4 L93.4,145.9 L93.4,145.9 L93.4,145.3 L93.4,145.3 L93.4,144.8 L93.7,144.8 L93.7,144.3 L93.9,144.3 L93.9,143.7 L94.0,143.7 L94.0,143.2 L94.0,143.2 L94.0,142.7 L94.2,142.7 L94.2,142.1 L94.3,142.1 L94.3,141.6 L94.3,141.6 L94.3,141.1 L94.3,141.1 L94.3,140.5 L94.4,140.5 L94.4,140.0 L94.4,140.0 L94.4,139.5 L94.4,139.5 L94.4,138.9 L94.5,138.9 L94.5,138.4 L94.5,138.4 L94.5,137.9 L94.7,137.9 L94.7,137.3 L94.7,137.3 L94.7,136.8 L94.9,136.8 L94.9,136.3 L95.0,136.3 L95.0,135.7 L95.0,135.7 L95.0,135.2 L95.8,135.2 L95.8,134.7 L95.9,134.7 L95.9,134.1 L96.0,134.1 L96.0,133.6 L96.1,133.6 L96.1,133.1 L96.2,133.1 L96.2,132.5 L96.4,132.5 L96.4,132.0 L96.4,132.0 L96.4,131.5 L96.4,131.5 L96.4,130.9 L96.5,130.9 L96.5,130.4 L96.5,130.4 L96.5,129.9 L96.5,129.9 L96.5,129.3 L96.6,129.3 L96.6,128.8 L96.6,128.8 L96.6,128.3 L96.7,128.3 L96.7,127.7 L96.7,127.7 L96.7,127.2 L96.8,127.2 L96.8,126.7 L96.8,126.7 L96.8,126.1 L96.9,126.1 L96.9,125.6 L96.9,125.6 L96.9,125.1 L97.0,125.1 L97.0,124.5 L97.0,124.5 L97.0,124.0 L97.1,124.0 L97.1,123.5 L97.2,123.5 L97.2,122.9 L97.2,122.9 L97.2,122.4 L97.2,122.4 L97.2,121.9 L97.3,121.9 L97.3,121.3 L97.3,121.3 L97.3,120.8 L97.6,120.8 L97.6,120.3 L97.6,120.3 L97.6,119.7 L97.7,119.7 L97.7,119.2 L97.8,119.2 L97.8,118.7 L98.2,118.7 L98.2,118.1 L98.4,118.1 L98.4,117.6 L99.2,117.6 L99.2,117.1 L99.4,117.1 L99.4,116.5 L99.5,116.5 L99.5,116.0 L99.5,116.0 L99.5,115.5 L99.6,115.5 L99.6,114.9 L99.7,114.9 L99.7,114.4 L99.8,114.4 L99.8,113.9 L99.9,113.9 L99.9,113.3 L99.9,113.3 L99.9,112.8 L100.0,112.8 L100.0,112.3 L100.0,112.3 L100.0,111.7 L100.0,111.7 L100.0,111.2 L100.1,111.2 L100.1,110.7 L100.1,110.7 L100.1,110.1 L100.1,110.1 L100.1,109.6 L100.2,109.6 L100.2,109.1 L100.2,109.1 L100.2,108.5 L100.2,108.5 L100.2,108.0 L100.2,108.0 L100.2,107.5 L100.3,107.5 L100.3,106.9 L100.3,106.9 L100.3,106.4 L100.4,106.4 L100.4,105.9 L100.5,105.9 L100.5,105.3 L100.6,105.3 L100.6,104.8 L100.6,104.8 L100.6,104.3 L100.7,104.3 L100.7,103.7 L100.7,103.7 L100.7,103.2 L100.8,103.2 L100.8,102.7 L100.9,102.7 L100.9,102.1 L101.0,102.1 L101.0,101.6 L101.2,101.6 L101.2,101.1 L101.3,101.1 L101.3,100.5 L101.4,100.5 L101.4,100.0 L101.4,100.0 L101.4,99.5 L101.5,99.5 L101.5,98.9 L101.6,98.9 L101.6,98.4 L101.7,98.4 L101.7,97.9 L101.7,97.9 L101.7,97.3 L101.7,97.3 L101.7,96.8 L101.8,96.8 L101.8,96.3 L102.9,96.3 L102.9,95.7 L102.9,95.7 L102.9,95.2 L103.0,95.2 L103.0,94.7 L103.0,94.7 L103.0,94.1 L103.1,94.1 L103.1,93.6 L103.1,93.6 L103.1,93.1 L103.1,93.1 L103.1,92.5 L103.1,92.5 L103.1,92.0 L103.3,92.0 L103.3,91.5 L103.3,91.5 L103.3,90.9 L103.4,90.9 L103.4,90.4 L103.5,90.4 L103.5,89.9 L103.5,89.9 L103.5,89.3 L103.5,89.3 L103.5,88.8 L103.7,88.8 L103.7,88.3 L103.7,88.3 L103.7,87.7 L103.7,87.7 L103.7,87.2 L103.8,87.2 L103.8,86.7 L103.8,86.7 L103.8,86.1 L103.9,86.1 L103.9,85.6 L104.0,85.6 L104.0,85.1 L104.2,85.1 L104.2,84.5 L104.2,84.5 L104.2,84.0 L104.2,84.0 L104.2,83.5 L104.4,83.5 L104.4,82.9 L104.5,82.9 L104.5,82.4 L104.7,82.4 L104.7,81.9 L104.9,81.9 L104.9,81.3 L104.9,81.3 L104.9,80.8 L105.1,80.8 L105.1,80.3 L105.4,80.3 L105.4,79.7 L105.6,79.7 L105.6,79.2 L105.6,79.2 L105.6,78.7 L106.1,78.7 L106.1,78.1 L106.4,78.1 L106.4,77.6 L106.4,77.6 L106.4,77.1 L106.5,77.1 L106.5,76.5 L106.6,76.5 L106.6,76.0 L106.6,76.0 L106.6,75.5 L106.7,75.5 L106.7,74.9 L106.7,74.9 L106.7,74.4 L106.7,74.4 L106.7,73.9 L106.7,73.9 L106.7,73.3 L106.8,73.3 L106.8,72.8 L106.9,72.8 L106.9,72.3 L106.9,72.3 L106.9,71.7 L107.0,71.7 L107.0,71.2 L107.0,71.2 L107.0,70.7 L107.0,70.7 L107.0,70.1 L107.1,70.1 L107.1,69.6 L107.1,69.6 L107.1,69.1 L107.2,69.1 L107.2,68.5 L107.2,68.5 L107.2,68.0 L107.3,68.0 L107.3,67.5 L107.3,67.5 L107.3,66.9 L107.4,66.9 L107.4,66.4 L107.6,66.4 L107.6,65.9 L107.7,65.9 L107.7,65.3 L107.8,65.3 L107.8,64.8 L108.2,64.8 L108.2,64.3 L108.2,64.3 L108.2,63.7 L108.4,63.7 L108.4,63.2 L108.7,63.2 L108.7,62.7 L109.8,62.7 L109.8,62.1 L109.9,62.1 L109.9,61.6 L110.0,61.6 L110.0,61.1 L110.0,61.1 L110.0,60.5 L110.1,60.5 L110.1,60.0 L110.3,60.0 L110.3,59.5 L110.4,59.5 L110.4,58.9 L110.5,58.9 L110.5,58.4 L110.5,58.4 L110.5,57.9 L110.5,57.9 L110.5,57.3 L110.8,57.3 L110.8,56.8 L110.9,56.8 L110.9,56.3 L110.9,56.3 L110.9,55.7 L111.5,55.7 L111.5,55.2 L111.6,55.2 L111.6,54.7 L111.8,54.7 L111.8,54.1 L112.0,54.1 L112.0,53.6 L112.3,53.6 L112.3,53.1 L112.8,53.1 L112.8,52.5 L113.0,52.5 L113.0,52.0 L113.3,52.0 L113.3,51.5 L113.7,51.5 L113.7,50.9 L113.7,50.9 L113.7,50.4 L113.8,50.4 L113.8,49.9 L114.2,49.9 L114.2,49.3 L114.6,49.3 L114.6,48.8 L115.1,48.8 L115.1,48.3 L115.4,48.3 L115.4,47.7 L116.5,47.7 L116.5,47.2 L117.0,47.2 L117.0,46.7 L117.3,46.7 L117.3,46.1 L117.4,46.1 L117.4,45.6 L117.5,45.6 L117.5,45.1 L118.0,45.1 L118.0,44.5 L118.0,44.5 L118.0,44.0 L118.0,44.0 L118.0,43.5 L118.4,43.5 L118.4,42.9 L119.0,42.9 L119.0,42.4 L119.7,42.4 L119.7,41.9 L121.2,41.9 L121.2,41.3 L121.3,41.3 L121.3,40.8 L121.6,40.8 L121.6,40.3 L121.7,40.3 L121.7,39.7 L121.7,39.7 L121.7,39.2 L121.7,39.2 L121.7,38.7 L121.9,38.7 L121.9,38.1 L122.1,38.1 L122.1,37.6 L122.2,37.6 L122.2,37.1 L123.3,37.1 L123.3,36.5 L123.7,36.5 L123.7,36.0 L123.8,36.0 L123.8,35.5 L124.0,35.5 L124.0,34.9 L124.5,34.9 L124.5,34.4 L125.6,34.4 L125.6,33.9 L125.7,33.9 L125.7,33.3 L127.5,33.3 L127.5,32.8 L128.0,32.8 L128.0,32.3 L128.3,32.3 L128.3,31.7 L130.8,31.7 L130.8,31.2 L131.1,31.2 L131.1,30.7 L131.2,30.7 L131.2,30.1 L132.4,30.1 L132.4,29.6 L134.5,29.6 L134.5,29.1 L135.5,29.1 L135.5,28.5 L135.7,28.5 L135.7,28.0 L139.5,28.0 L139.5,27.5 L141.3,27.5 L141.3,26.9 L141.9,26.9 L141.9,26.4 L142.9,26.4 L142.9,25.9 L145.0,25.9 L145.0,25.3 L145.1,25.3 L145.1,24.8 L147.5,24.8 L147.5,24.3 L148.7,24.3 L148.7,23.7 L150.8,23.7 L150.8,23.2 L151.0,23.2 L151.0,22.7 L156.2,22.7 L156.2,22.1 L159.8,22.1 L159.8,21.6 L160.2,21.6 L160.2,21.1 L169.0,21.1 L169.0,20.5 L186.3,20.5 L186.3,20.0" style="fill:none;stroke:var(--accent);stroke-width:1.8"/>
+  <path d="M44.0,180.0 L71.1,180.0 L71.1,179.5 L71.4,179.5 L71.4,178.9 L71.7,178.9 L71.7,178.4 L71.9,178.4 L71.9,177.9 L73.0,177.9 L73.0,177.3 L73.9,177.3 L73.9,176.8 L74.4,176.8 L74.4,176.3 L74.5,176.3 L74.5,175.7 L74.8,175.7 L74.8,175.2 L74.9,175.2 L74.9,174.7 L75.8,174.7 L75.8,174.1 L76.3,174.1 L76.3,173.6 L76.7,173.6 L76.7,173.1 L76.9,173.1 L76.9,172.5 L77.4,172.5 L77.4,172.0 L77.4,172.0 L77.4,171.5 L77.4,171.5 L77.4,170.9 L77.9,170.9 L77.9,170.4 L77.9,170.4 L77.9,169.9 L78.1,169.9 L78.1,169.3 L78.2,169.3 L78.2,168.8 L78.4,168.8 L78.4,168.3 L78.5,168.3 L78.5,167.7 L78.5,167.7 L78.5,167.2 L78.7,167.2 L78.7,166.7 L78.8,166.7 L78.8,166.1 L79.0,166.1 L79.0,165.6 L79.1,165.6 L79.1,165.1 L79.3,165.1 L79.3,164.5 L79.6,164.5 L79.6,164.0 L79.6,164.0 L79.6,163.5 L80.2,163.5 L80.2,162.9 L80.5,162.9 L80.5,162.4 L80.7,162.4 L80.7,161.9 L80.8,161.9 L80.8,161.3 L80.8,161.3 L80.8,160.8 L80.9,160.8 L80.9,160.3 L81.6,160.3 L81.6,159.7 L81.6,159.7 L81.6,159.2 L81.8,159.2 L81.8,158.7 L81.8,158.7 L81.8,158.1 L81.8,158.1 L81.8,157.6 L81.9,157.6 L81.9,157.1 L82.0,157.1 L82.0,156.5 L82.0,156.5 L82.0,156.0 L82.0,156.0 L82.0,155.5 L82.0,155.5 L82.0,154.9 L82.1,154.9 L82.1,154.4 L82.1,154.4 L82.1,153.9 L82.2,153.9 L82.2,153.3 L82.3,153.3 L82.3,152.8 L82.3,152.8 L82.3,152.3 L82.4,152.3 L82.4,151.7 L82.4,151.7 L82.4,151.2 L82.5,151.2 L82.5,150.7 L82.6,150.7 L82.6,150.1 L82.6,150.1 L82.6,149.6 L82.6,149.6 L82.6,149.1 L82.9,149.1 L82.9,148.5 L83.1,148.5 L83.1,148.0 L83.3,148.0 L83.3,147.5 L83.4,147.5 L83.4,146.9 L83.5,146.9 L83.5,146.4 L83.5,146.4 L83.5,145.9 L83.6,145.9 L83.6,145.3 L83.8,145.3 L83.8,144.8 L83.9,144.8 L83.9,144.3 L84.0,144.3 L84.0,143.7 L84.2,143.7 L84.2,143.2 L84.2,143.2 L84.2,142.7 L84.4,142.7 L84.4,142.1 L84.4,142.1 L84.4,141.6 L84.4,141.6 L84.4,141.1 L84.4,141.1 L84.4,140.5 L84.4,140.5 L84.4,140.0 L84.6,140.0 L84.6,139.5 L84.6,139.5 L84.6,138.9 L84.8,138.9 L84.8,138.4 L84.9,138.4 L84.9,137.9 L85.1,137.9 L85.1,137.3 L85.2,137.3 L85.2,136.8 L85.3,136.8 L85.3,136.3 L85.3,136.3 L85.3,135.7 L85.3,135.7 L85.3,135.2 L85.4,135.2 L85.4,134.7 L85.6,134.7 L85.6,134.1 L85.6,134.1 L85.6,133.6 L85.6,133.6 L85.6,133.1 L85.8,133.1 L85.8,132.5 L85.9,132.5 L85.9,132.0 L85.9,132.0 L85.9,131.5 L86.0,131.5 L86.0,130.9 L86.0,130.9 L86.0,130.4 L86.1,130.4 L86.1,129.9 L86.2,129.9 L86.2,129.3 L86.2,129.3 L86.2,128.8 L86.2,128.8 L86.2,128.3 L86.3,128.3 L86.3,127.7 L86.5,127.7 L86.5,127.2 L86.7,127.2 L86.7,126.7 L86.8,126.7 L86.8,126.1 L86.8,126.1 L86.8,125.6 L87.2,125.6 L87.2,125.1 L87.2,125.1 L87.2,124.5 L87.3,124.5 L87.3,124.0 L87.4,124.0 L87.4,123.5 L87.4,123.5 L87.4,122.9 L87.4,122.9 L87.4,122.4 L87.5,122.4 L87.5,121.9 L87.6,121.9 L87.6,121.3 L87.6,121.3 L87.6,120.8 L87.7,120.8 L87.7,120.3 L87.9,120.3 L87.9,119.7 L87.9,119.7 L87.9,119.2 L87.9,119.2 L87.9,118.7 L88.0,118.7 L88.0,118.1 L88.0,118.1 L88.0,117.6 L88.1,117.6 L88.1,117.1 L88.2,117.1 L88.2,116.5 L88.3,116.5 L88.3,116.0 L88.4,116.0 L88.4,115.5 L88.6,115.5 L88.6,114.9 L88.6,114.9 L88.6,114.4 L88.7,114.4 L88.7,113.9 L88.8,113.9 L88.8,113.3 L88.8,113.3 L88.8,112.8 L88.9,112.8 L88.9,112.3 L88.9,112.3 L88.9,111.7 L89.0,111.7 L89.0,111.2 L89.1,111.2 L89.1,110.7 L89.1,110.7 L89.1,110.1 L89.1,110.1 L89.1,109.6 L89.1,109.6 L89.1,109.1 L89.3,109.1 L89.3,108.5 L89.3,108.5 L89.3,108.0 L89.3,108.0 L89.3,107.5 L89.4,107.5 L89.4,106.9 L89.4,106.9 L89.4,106.4 L89.5,106.4 L89.5,105.9 L89.5,105.9 L89.5,105.3 L89.6,105.3 L89.6,104.8 L89.7,104.8 L89.7,104.3 L89.8,104.3 L89.8,103.7 L89.8,103.7 L89.8,103.2 L90.0,103.2 L90.0,102.7 L90.2,102.7 L90.2,102.1 L90.2,102.1 L90.2,101.6 L90.2,101.6 L90.2,101.1 L90.2,101.1 L90.2,100.5 L90.3,100.5 L90.3,100.0 L90.4,100.0 L90.4,99.5 L90.4,99.5 L90.4,98.9 L90.5,98.9 L90.5,98.4 L90.6,98.4 L90.6,97.9 L90.6,97.9 L90.6,97.3 L90.6,97.3 L90.6,96.8 L90.7,96.8 L90.7,96.3 L90.8,96.3 L90.8,95.7 L90.8,95.7 L90.8,95.2 L90.9,95.2 L90.9,94.7 L91.1,94.7 L91.1,94.1 L91.1,94.1 L91.1,93.6 L91.1,93.6 L91.1,93.1 L91.1,93.1 L91.1,92.5 L91.1,92.5 L91.1,92.0 L91.2,92.0 L91.2,91.5 L91.3,91.5 L91.3,90.9 L91.5,90.9 L91.5,90.4 L91.6,90.4 L91.6,89.9 L91.7,89.9 L91.7,89.3 L91.7,89.3 L91.7,88.8 L91.9,88.8 L91.9,88.3 L92.0,88.3 L92.0,87.7 L92.0,87.7 L92.0,87.2 L92.0,87.2 L92.0,86.7 L92.1,86.7 L92.1,86.1 L92.2,86.1 L92.2,85.6 L92.5,85.6 L92.5,85.1 L92.5,85.1 L92.5,84.5 L92.6,84.5 L92.6,84.0 L92.6,84.0 L92.6,83.5 L92.7,83.5 L92.7,82.9 L92.8,82.9 L92.8,82.4 L92.8,82.4 L92.8,81.9 L92.9,81.9 L92.9,81.3 L93.0,81.3 L93.0,80.8 L93.1,80.8 L93.1,80.3 L93.2,80.3 L93.2,79.7 L93.3,79.7 L93.3,79.2 L93.3,79.2 L93.3,78.7 L93.4,78.7 L93.4,78.1 L93.6,78.1 L93.6,77.6 L93.7,77.6 L93.7,77.1 L93.7,77.1 L93.7,76.5 L93.9,76.5 L93.9,76.0 L93.9,76.0 L93.9,75.5 L93.9,75.5 L93.9,74.9 L94.0,74.9 L94.0,74.4 L94.3,74.4 L94.3,73.9 L94.4,73.9 L94.4,73.3 L94.4,73.3 L94.4,72.8 L94.5,72.8 L94.5,72.3 L94.6,72.3 L94.6,71.7 L94.7,71.7 L94.7,71.2 L94.9,71.2 L94.9,70.7 L94.9,70.7 L94.9,70.1 L95.1,70.1 L95.1,69.6 L95.1,69.6 L95.1,69.1 L95.1,69.1 L95.1,68.5 L95.1,68.5 L95.1,68.0 L95.2,68.0 L95.2,67.5 L95.3,67.5 L95.3,66.9 L95.3,66.9 L95.3,66.4 L95.4,66.4 L95.4,65.9 L95.4,65.9 L95.4,65.3 L95.5,65.3 L95.5,64.8 L95.5,64.8 L95.5,64.3 L95.5,64.3 L95.5,63.7 L95.6,63.7 L95.6,63.2 L95.7,63.2 L95.7,62.7 L95.8,62.7 L95.8,62.1 L95.8,62.1 L95.8,61.6 L95.8,61.6 L95.8,61.1 L95.9,61.1 L95.9,60.5 L95.9,60.5 L95.9,60.0 L95.9,60.0 L95.9,59.5 L96.0,59.5 L96.0,58.9 L96.0,58.9 L96.0,58.4 L96.2,58.4 L96.2,57.9 L96.3,57.9 L96.3,57.3 L96.3,57.3 L96.3,56.8 L96.4,56.8 L96.4,56.3 L96.4,56.3 L96.4,55.7 L96.4,55.7 L96.4,55.2 L96.6,55.2 L96.6,54.7 L96.6,54.7 L96.6,54.1 L96.6,54.1 L96.6,53.6 L96.6,53.6 L96.6,53.1 L96.9,53.1 L96.9,52.5 L96.9,52.5 L96.9,52.0 L96.9,52.0 L96.9,51.5 L96.9,51.5 L96.9,50.9 L97.1,50.9 L97.1,50.4 L97.2,50.4 L97.2,49.9 L97.6,49.9 L97.6,49.3 L97.6,49.3 L97.6,48.8 L97.6,48.8 L97.6,48.3 L97.7,48.3 L97.7,47.7 L97.8,47.7 L97.8,47.2 L97.9,47.2 L97.9,46.7 L98.0,46.7 L98.0,46.1 L98.2,46.1 L98.2,45.6 L98.3,45.6 L98.3,45.1 L98.3,45.1 L98.3,44.5 L98.4,44.5 L98.4,44.0 L98.6,44.0 L98.6,43.5 L98.7,43.5 L98.7,42.9 L98.9,42.9 L98.9,42.4 L99.1,42.4 L99.1,41.9 L99.2,41.9 L99.2,41.3 L99.6,41.3 L99.6,40.8 L99.8,40.8 L99.8,40.3 L99.9,40.3 L99.9,39.7 L100.0,39.7 L100.0,39.2 L100.7,39.2 L100.7,38.7 L100.8,38.7 L100.8,38.1 L100.8,38.1 L100.8,37.6 L101.2,37.6 L101.2,37.1 L101.5,37.1 L101.5,36.5 L101.5,36.5 L101.5,36.0 L101.6,36.0 L101.6,35.5 L101.6,35.5 L101.6,34.9 L101.7,34.9 L101.7,34.4 L102.2,34.4 L102.2,33.9 L102.3,33.9 L102.3,33.3 L102.3,33.3 L102.3,32.8 L102.3,32.8 L102.3,32.3 L102.6,32.3 L102.6,31.7 L102.6,31.7 L102.6,31.2 L102.8,31.2 L102.8,30.7 L103.0,30.7 L103.0,30.1 L103.5,30.1 L103.5,29.6 L103.9,29.6 L103.9,29.1 L104.0,29.1 L104.0,28.5 L104.3,28.5 L104.3,28.0 L104.3,28.0 L104.3,27.5 L104.5,27.5 L104.5,26.9 L104.7,26.9 L104.7,26.4 L106.8,26.4 L106.8,25.9 L108.6,25.9 L108.6,25.3 L108.9,25.3 L108.9,24.8 L109.2,24.8 L109.2,24.3 L111.0,24.3 L111.0,23.7 L111.9,23.7 L111.9,23.2 L115.6,23.2 L115.6,22.7 L115.6,22.7 L115.6,22.1 L115.8,22.1 L115.8,21.6 L121.3,21.6 L121.3,21.1 L136.6,21.1 L136.6,20.5 L137.6,20.5 L137.6,20.0" style="fill:none;stroke:var(--c2);stroke-width:1.8"/>
+  <circle cx="90.4" cy="100.0" r="3.6" style="fill:var(--card);stroke:var(--c2);stroke-width:2"/><text class="t-val" x="96.4" y="104.0" text-anchor="start" style="fill:var(--c2)"></text>
+  <circle cx="101.4" cy="100.0" r="3.6" style="fill:var(--card);stroke:var(--accent);stroke-width:2"/><text class="t-val" x="107.4" y="104.0" text-anchor="start" style="fill:var(--accent)"></text>
+</svg>
+</div>
+<div class="panel"><h4>Receipts: time grows with the answer</h4><p class="sub">Each dot is one receipt. Dashed least-squares lines: 43 ms an answer token plain, 17 ms with drafts.</p>
+<svg viewBox="0 0 320 210" role="img" aria-label="Time per receipt against answer length, plain and exact drafts, with least-squares lines">
+  <g class="grid">
+  <path d="M44 180.0 H308"/>
+  <path d="M44 141.9 H308"/>
+  <path d="M44 103.8 H308"/>
+  <path d="M44 65.7 H308"/>
+  <path d="M44 27.6 H308"/>
+  </g>
+  <text class="t-axis" x="38" y="183.5" text-anchor="end">0 s</text>
+  <text class="t-axis" x="38" y="145.4" text-anchor="end">3 s</text>
+  <text class="t-axis" x="38" y="107.3" text-anchor="end">6 s</text>
+  <text class="t-axis" x="38" y="69.2" text-anchor="end">9 s</text>
+  <text class="t-axis" x="38" y="31.1" text-anchor="end">12 s</text>
+  <text class="t-axis" x="44.0" y="195" text-anchor="middle">0</text>
+  <text class="t-axis" x="88.0" y="195" text-anchor="middle">50</text>
+  <text class="t-axis" x="132.0" y="195" text-anchor="middle">100</text>
+  <text class="t-axis" x="176.0" y="195" text-anchor="middle">150</text>
+  <text class="t-axis" x="220.0" y="195" text-anchor="middle">200</text>
+  <text class="t-axis" x="264.0" y="195" text-anchor="middle">250</text>
+  <text class="t-axis" x="308.0" y="195" text-anchor="middle">300</text>
+  <text class="t-axis" x="308" y="208" text-anchor="end">answer tokens</text>
+  <circle cx="117.9" cy="132.6" r="2.4" style="fill:var(--accent);opacity:.7"/>
+  <circle cx="134.6" cy="124.1" r="2.4" style="fill:var(--accent);opacity:.7"/>
+  <circle cx="136.4" cy="122.4" r="2.4" style="fill:var(--accent);opacity:.7"/>
+  <circle cx="108.2" cy="139.9" r="2.4" style="fill:var(--accent);opacity:.7"/>
+  <circle cx="158.4" cy="109.2" r="2.4" style="fill:var(--accent);opacity:.7"/>
+  <circle cx="113.5" cy="136.8" r="2.4" style="fill:var(--accent);opacity:.7"/>
+  <circle cx="146.1" cy="117.0" r="2.4" style="fill:var(--accent);opacity:.7"/>
+  <circle cx="136.4" cy="123.0" r="2.4" style="fill:var(--accent);opacity:.7"/>
+  <circle cx="113.5" cy="135.8" r="2.4" style="fill:var(--accent);opacity:.7"/>
+  <circle cx="104.7" cy="141.7" r="2.4" style="fill:var(--accent);opacity:.7"/>
+  <circle cx="114.4" cy="135.4" r="2.4" style="fill:var(--accent);opacity:.7"/>
+  <circle cx="110.0" cy="139.0" r="2.4" style="fill:var(--accent);opacity:.7"/>
+  <circle cx="133.8" cy="123.7" r="2.4" style="fill:var(--accent);opacity:.7"/>
+  <circle cx="216.5" cy="73.5" r="2.4" style="fill:var(--accent);opacity:.7"/>
+  <circle cx="124.1" cy="130.3" r="2.4" style="fill:var(--accent);opacity:.7"/>
+  <circle cx="150.5" cy="113.9" r="2.4" style="fill:var(--accent);opacity:.7"/>
+  <circle cx="189.2" cy="90.7" r="2.4" style="fill:var(--accent);opacity:.7"/>
+  <circle cx="104.7" cy="142.1" r="2.4" style="fill:var(--accent);opacity:.7"/>
+  <circle cx="126.7" cy="128.8" r="2.4" style="fill:var(--accent);opacity:.7"/>
+  <circle cx="182.2" cy="95.2" r="2.4" style="fill:var(--accent);opacity:.7"/>
+  <circle cx="134.6" cy="123.5" r="2.4" style="fill:var(--accent);opacity:.7"/>
+  <circle cx="136.4" cy="123.1" r="2.4" style="fill:var(--accent);opacity:.7"/>
+  <circle cx="124.1" cy="130.4" r="2.4" style="fill:var(--accent);opacity:.7"/>
+  <circle cx="158.4" cy="109.2" r="2.4" style="fill:var(--accent);opacity:.7"/>
+  <circle cx="149.6" cy="114.2" r="2.4" style="fill:var(--accent);opacity:.7"/>
+  <circle cx="154.9" cy="109.6" r="2.4" style="fill:var(--accent);opacity:.7"/>
+  <circle cx="125.0" cy="129.2" r="2.4" style="fill:var(--accent);opacity:.7"/>
+  <circle cx="151.4" cy="112.9" r="2.4" style="fill:var(--accent);opacity:.7"/>
+  <circle cx="242.0" cy="57.4" r="2.4" style="fill:var(--accent);opacity:.7"/>
+  <circle cx="115.3" cy="134.8" r="2.4" style="fill:var(--accent);opacity:.7"/>
+  <circle cx="133.8" cy="123.4" r="2.4" style="fill:var(--accent);opacity:.7"/>
+  <circle cx="114.4" cy="135.4" r="2.4" style="fill:var(--accent);opacity:.7"/>
+  <circle cx="150.5" cy="112.5" r="2.4" style="fill:var(--accent);opacity:.7"/>
+  <circle cx="134.6" cy="122.7" r="2.4" style="fill:var(--accent);opacity:.7"/>
+  <circle cx="166.3" cy="104.1" r="2.4" style="fill:var(--accent);opacity:.7"/>
+  <circle cx="114.4" cy="135.9" r="2.4" style="fill:var(--accent);opacity:.7"/>
+  <circle cx="108.2" cy="139.7" r="2.4" style="fill:var(--accent);opacity:.7"/>
+  <circle cx="257.8" cy="47.8" r="2.4" style="fill:var(--accent);opacity:.7"/>
+  <circle cx="187.4" cy="88.9" r="2.4" style="fill:var(--accent);opacity:.7"/>
+  <circle cx="137.3" cy="120.6" r="2.4" style="fill:var(--accent);opacity:.7"/>
+  <circle cx="294.8" cy="25.1" r="2.4" style="fill:var(--accent);opacity:.7"/>
+  <circle cx="118.8" cy="133.1" r="2.4" style="fill:var(--accent);opacity:.7"/>
+  <circle cx="139.0" cy="120.3" r="2.4" style="fill:var(--accent);opacity:.7"/>
+  <circle cx="106.5" cy="140.7" r="2.4" style="fill:var(--accent);opacity:.7"/>
+  <circle cx="157.5" cy="109.4" r="2.4" style="fill:var(--accent);opacity:.7"/>
+  <circle cx="124.1" cy="129.4" r="2.4" style="fill:var(--accent);opacity:.7"/>
+  <circle cx="139.0" cy="119.3" r="2.4" style="fill:var(--accent);opacity:.7"/>
+  <circle cx="120.6" cy="131.5" r="2.4" style="fill:var(--accent);opacity:.7"/>
+  <circle cx="130.2" cy="125.8" r="2.4" style="fill:var(--accent);opacity:.7"/>
+  <circle cx="117.0" cy="133.9" r="2.4" style="fill:var(--accent);opacity:.7"/>
+  <circle cx="175.1" cy="97.6" r="2.4" style="fill:var(--accent);opacity:.7"/>
+  <circle cx="133.8" cy="123.6" r="2.4" style="fill:var(--accent);opacity:.7"/>
+  <circle cx="150.5" cy="113.4" r="2.4" style="fill:var(--accent);opacity:.7"/>
+  <circle cx="108.2" cy="139.7" r="2.4" style="fill:var(--accent);opacity:.7"/>
+  <circle cx="125.0" cy="129.5" r="2.4" style="fill:var(--accent);opacity:.7"/>
+  <circle cx="109.1" cy="139.0" r="2.4" style="fill:var(--accent);opacity:.7"/>
+  <circle cx="114.4" cy="136.1" r="2.4" style="fill:var(--accent);opacity:.7"/>
+  <circle cx="262.2" cy="44.0" r="2.4" style="fill:var(--accent);opacity:.7"/>
+  <circle cx="133.8" cy="122.2" r="2.4" style="fill:var(--accent);opacity:.7"/>
+  <circle cx="193.6" cy="85.4" r="2.4" style="fill:var(--accent);opacity:.7"/>
+  <circle cx="125.0" cy="128.8" r="2.4" style="fill:var(--accent);opacity:.7"/>
+  <circle cx="132.0" cy="124.0" r="2.4" style="fill:var(--accent);opacity:.7"/>
+  <circle cx="107.4" cy="140.2" r="2.4" style="fill:var(--accent);opacity:.7"/>
+  <circle cx="106.5" cy="140.5" r="2.4" style="fill:var(--accent);opacity:.7"/>
+  <circle cx="117.9" cy="132.7" r="2.4" style="fill:var(--accent);opacity:.7"/>
+  <circle cx="108.2" cy="139.1" r="2.4" style="fill:var(--accent);opacity:.7"/>
+  <circle cx="106.5" cy="140.6" r="2.4" style="fill:var(--accent);opacity:.7"/>
+  <circle cx="153.1" cy="110.9" r="2.4" style="fill:var(--accent);opacity:.7"/>
+  <circle cx="254.3" cy="47.7" r="2.4" style="fill:var(--accent);opacity:.7"/>
+  <circle cx="107.4" cy="140.1" r="2.4" style="fill:var(--accent);opacity:.7"/>
+  <circle cx="113.5" cy="136.4" r="2.4" style="fill:var(--accent);opacity:.7"/>
+  <circle cx="128.5" cy="126.8" r="2.4" style="fill:var(--accent);opacity:.7"/>
+  <circle cx="167.2" cy="103.3" r="2.4" style="fill:var(--accent);opacity:.7"/>
+  <circle cx="210.3" cy="76.1" r="2.4" style="fill:var(--accent);opacity:.7"/>
+  <circle cx="167.2" cy="103.6" r="2.4" style="fill:var(--accent);opacity:.7"/>
+  <circle cx="112.6" cy="136.6" r="2.4" style="fill:var(--accent);opacity:.7"/>
+  <circle cx="121.4" cy="131.4" r="2.4" style="fill:var(--accent);opacity:.7"/>
+  <circle cx="120.6" cy="131.8" r="2.4" style="fill:var(--accent);opacity:.7"/>
+  <circle cx="106.5" cy="140.4" r="2.4" style="fill:var(--accent);opacity:.7"/>
+  <circle cx="146.1" cy="115.7" r="2.4" style="fill:var(--accent);opacity:.7"/>
+  <circle cx="149.6" cy="113.3" r="2.4" style="fill:var(--accent);opacity:.7"/>
+  <circle cx="116.2" cy="134.4" r="2.4" style="fill:var(--accent);opacity:.7"/>
+  <circle cx="130.2" cy="124.7" r="2.4" style="fill:var(--accent);opacity:.7"/>
+  <circle cx="272.8" cy="37.0" r="2.4" style="fill:var(--accent);opacity:.7"/>
+  <circle cx="127.6" cy="127.3" r="2.4" style="fill:var(--accent);opacity:.7"/>
+  <circle cx="111.8" cy="137.2" r="2.4" style="fill:var(--accent);opacity:.7"/>
+  <circle cx="130.2" cy="125.5" r="2.4" style="fill:var(--accent);opacity:.7"/>
+  <circle cx="113.5" cy="135.9" r="2.4" style="fill:var(--accent);opacity:.7"/>
+  <circle cx="113.5" cy="135.8" r="2.4" style="fill:var(--accent);opacity:.7"/>
+  <circle cx="125.0" cy="128.9" r="2.4" style="fill:var(--accent);opacity:.7"/>
+  <circle cx="110.0" cy="138.2" r="2.4" style="fill:var(--accent);opacity:.7"/>
+  <circle cx="110.9" cy="137.9" r="2.4" style="fill:var(--accent);opacity:.7"/>
+  <circle cx="171.6" cy="100.7" r="2.4" style="fill:var(--accent);opacity:.7"/>
+  <circle cx="110.0" cy="138.4" r="2.4" style="fill:var(--accent);opacity:.7"/>
+  <circle cx="119.7" cy="132.1" r="2.4" style="fill:var(--accent);opacity:.7"/>
+  <circle cx="155.8" cy="110.3" r="2.4" style="fill:var(--accent);opacity:.7"/>
+  <path d="M104.7,141.6 L294.8,24.2" style="fill:none;stroke:var(--accent);stroke-width:1.6;stroke-dasharray:6 4"/>
+  <circle cx="117.9" cy="160.6" r="2.4" style="fill:var(--c2);opacity:.7"/>
+  <circle cx="134.6" cy="160.2" r="2.4" style="fill:var(--c2);opacity:.7"/>
+  <circle cx="136.4" cy="160.0" r="2.4" style="fill:var(--c2);opacity:.7"/>
+  <circle cx="108.2" cy="167.3" r="2.4" style="fill:var(--c2);opacity:.7"/>
+  <circle cx="158.4" cy="158.3" r="2.4" style="fill:var(--c2);opacity:.7"/>
+  <circle cx="113.5" cy="165.7" r="2.4" style="fill:var(--c2);opacity:.7"/>
+  <circle cx="146.1" cy="161.1" r="2.4" style="fill:var(--c2);opacity:.7"/>
+  <circle cx="136.4" cy="160.8" r="2.4" style="fill:var(--c2);opacity:.7"/>
+  <circle cx="113.5" cy="165.7" r="2.4" style="fill:var(--c2);opacity:.7"/>
+  <circle cx="104.7" cy="167.1" r="2.4" style="fill:var(--c2);opacity:.7"/>
+  <circle cx="114.4" cy="166.5" r="2.4" style="fill:var(--c2);opacity:.7"/>
+  <circle cx="110.0" cy="167.2" r="2.4" style="fill:var(--c2);opacity:.7"/>
+  <circle cx="133.8" cy="160.4" r="2.4" style="fill:var(--c2);opacity:.7"/>
+  <circle cx="216.5" cy="135.2" r="2.4" style="fill:var(--c2);opacity:.7"/>
+  <circle cx="124.1" cy="165.0" r="2.4" style="fill:var(--c2);opacity:.7"/>
+  <circle cx="150.5" cy="155.7" r="2.4" style="fill:var(--c2);opacity:.7"/>
+  <circle cx="189.2" cy="149.6" r="2.4" style="fill:var(--c2);opacity:.7"/>
+  <circle cx="104.7" cy="166.8" r="2.4" style="fill:var(--c2);opacity:.7"/>
+  <circle cx="126.7" cy="161.4" r="2.4" style="fill:var(--c2);opacity:.7"/>
+  <circle cx="182.2" cy="143.8" r="2.4" style="fill:var(--c2);opacity:.7"/>
+  <circle cx="134.6" cy="162.0" r="2.4" style="fill:var(--c2);opacity:.7"/>
+  <circle cx="136.4" cy="163.9" r="2.4" style="fill:var(--c2);opacity:.7"/>
+  <circle cx="124.1" cy="165.7" r="2.4" style="fill:var(--c2);opacity:.7"/>
+  <circle cx="158.4" cy="159.2" r="2.4" style="fill:var(--c2);opacity:.7"/>
+  <circle cx="149.6" cy="162.9" r="2.4" style="fill:var(--c2);opacity:.7"/>
+  <circle cx="154.9" cy="159.4" r="2.4" style="fill:var(--c2);opacity:.7"/>
+  <circle cx="125.0" cy="162.0" r="2.4" style="fill:var(--c2);opacity:.7"/>
+  <circle cx="151.4" cy="159.6" r="2.4" style="fill:var(--c2);opacity:.7"/>
+  <circle cx="242.0" cy="141.6" r="2.4" style="fill:var(--c2);opacity:.7"/>
+  <circle cx="115.3" cy="165.1" r="2.4" style="fill:var(--c2);opacity:.7"/>
+  <circle cx="133.8" cy="163.1" r="2.4" style="fill:var(--c2);opacity:.7"/>
+  <circle cx="114.4" cy="167.3" r="2.4" style="fill:var(--c2);opacity:.7"/>
+  <circle cx="150.5" cy="159.0" r="2.4" style="fill:var(--c2);opacity:.7"/>
+  <circle cx="134.6" cy="158.7" r="2.4" style="fill:var(--c2);opacity:.7"/>
+  <circle cx="166.3" cy="158.1" r="2.4" style="fill:var(--c2);opacity:.7"/>
+  <circle cx="114.4" cy="167.8" r="2.4" style="fill:var(--c2);opacity:.7"/>
+  <circle cx="108.2" cy="168.6" r="2.4" style="fill:var(--c2);opacity:.7"/>
+  <circle cx="257.8" cy="127.7" r="2.4" style="fill:var(--c2);opacity:.7"/>
+  <circle cx="187.4" cy="142.2" r="2.4" style="fill:var(--c2);opacity:.7"/>
+  <circle cx="137.3" cy="161.6" r="2.4" style="fill:var(--c2);opacity:.7"/>
+  <circle cx="294.8" cy="119.9" r="2.4" style="fill:var(--c2);opacity:.7"/>
+  <circle cx="118.8" cy="165.4" r="2.4" style="fill:var(--c2);opacity:.7"/>
+  <circle cx="139.0" cy="157.2" r="2.4" style="fill:var(--c2);opacity:.7"/>
+  <circle cx="106.5" cy="169.6" r="2.4" style="fill:var(--c2);opacity:.7"/>
+  <circle cx="157.5" cy="153.7" r="2.4" style="fill:var(--c2);opacity:.7"/>
+  <circle cx="124.1" cy="165.6" r="2.4" style="fill:var(--c2);opacity:.7"/>
+  <circle cx="139.0" cy="157.7" r="2.4" style="fill:var(--c2);opacity:.7"/>
+  <circle cx="120.6" cy="163.5" r="2.4" style="fill:var(--c2);opacity:.7"/>
+  <circle cx="130.2" cy="162.9" r="2.4" style="fill:var(--c2);opacity:.7"/>
+  <circle cx="117.0" cy="166.6" r="2.4" style="fill:var(--c2);opacity:.7"/>
+  <circle cx="175.1" cy="148.1" r="2.4" style="fill:var(--c2);opacity:.7"/>
+  <circle cx="133.8" cy="163.9" r="2.4" style="fill:var(--c2);opacity:.7"/>
+  <circle cx="150.5" cy="151.0" r="2.4" style="fill:var(--c2);opacity:.7"/>
+  <circle cx="108.2" cy="168.5" r="2.4" style="fill:var(--c2);opacity:.7"/>
+  <circle cx="125.0" cy="163.2" r="2.4" style="fill:var(--c2);opacity:.7"/>
+  <circle cx="109.1" cy="167.0" r="2.4" style="fill:var(--c2);opacity:.7"/>
+  <circle cx="114.4" cy="165.7" r="2.4" style="fill:var(--c2);opacity:.7"/>
+  <circle cx="262.2" cy="126.6" r="2.4" style="fill:var(--c2);opacity:.7"/>
+  <circle cx="133.8" cy="158.3" r="2.4" style="fill:var(--c2);opacity:.7"/>
+  <circle cx="193.6" cy="147.1" r="2.4" style="fill:var(--c2);opacity:.7"/>
+  <circle cx="125.0" cy="164.9" r="2.4" style="fill:var(--c2);opacity:.7"/>
+  <circle cx="132.0" cy="161.8" r="2.4" style="fill:var(--c2);opacity:.7"/>
+  <circle cx="107.4" cy="168.1" r="2.4" style="fill:var(--c2);opacity:.7"/>
+  <circle cx="106.5" cy="167.1" r="2.4" style="fill:var(--c2);opacity:.7"/>
+  <circle cx="117.9" cy="163.0" r="2.4" style="fill:var(--c2);opacity:.7"/>
+  <circle cx="108.2" cy="168.7" r="2.4" style="fill:var(--c2);opacity:.7"/>
+  <circle cx="106.5" cy="168.8" r="2.4" style="fill:var(--c2);opacity:.7"/>
+  <circle cx="153.1" cy="160.3" r="2.4" style="fill:var(--c2);opacity:.7"/>
+  <circle cx="254.3" cy="135.8" r="2.4" style="fill:var(--c2);opacity:.7"/>
+  <circle cx="107.4" cy="166.7" r="2.4" style="fill:var(--c2);opacity:.7"/>
+  <circle cx="113.5" cy="167.9" r="2.4" style="fill:var(--c2);opacity:.7"/>
+  <circle cx="128.5" cy="164.7" r="2.4" style="fill:var(--c2);opacity:.7"/>
+  <circle cx="167.2" cy="151.1" r="2.4" style="fill:var(--c2);opacity:.7"/>
+  <circle cx="210.3" cy="151.7" r="2.4" style="fill:var(--c2);opacity:.7"/>
+  <circle cx="167.2" cy="155.3" r="2.4" style="fill:var(--c2);opacity:.7"/>
+  <circle cx="112.6" cy="167.2" r="2.4" style="fill:var(--c2);opacity:.7"/>
+  <circle cx="121.4" cy="165.9" r="2.4" style="fill:var(--c2);opacity:.7"/>
+  <circle cx="120.6" cy="167.0" r="2.4" style="fill:var(--c2);opacity:.7"/>
+  <circle cx="106.5" cy="167.4" r="2.4" style="fill:var(--c2);opacity:.7"/>
+  <circle cx="146.1" cy="162.8" r="2.4" style="fill:var(--c2);opacity:.7"/>
+  <circle cx="149.6" cy="157.6" r="2.4" style="fill:var(--c2);opacity:.7"/>
+  <circle cx="116.2" cy="166.4" r="2.4" style="fill:var(--c2);opacity:.7"/>
+  <circle cx="130.2" cy="159.4" r="2.4" style="fill:var(--c2);opacity:.7"/>
+  <circle cx="272.8" cy="124.7" r="2.4" style="fill:var(--c2);opacity:.7"/>
+  <circle cx="127.6" cy="163.5" r="2.4" style="fill:var(--c2);opacity:.7"/>
+  <circle cx="111.8" cy="165.0" r="2.4" style="fill:var(--c2);opacity:.7"/>
+  <circle cx="130.2" cy="161.7" r="2.4" style="fill:var(--c2);opacity:.7"/>
+  <circle cx="113.5" cy="167.2" r="2.4" style="fill:var(--c2);opacity:.7"/>
+  <circle cx="113.5" cy="166.2" r="2.4" style="fill:var(--c2);opacity:.7"/>
+  <circle cx="125.0" cy="163.8" r="2.4" style="fill:var(--c2);opacity:.7"/>
+  <circle cx="110.0" cy="165.1" r="2.4" style="fill:var(--c2);opacity:.7"/>
+  <circle cx="110.9" cy="168.9" r="2.4" style="fill:var(--c2);opacity:.7"/>
+  <circle cx="171.6" cy="147.6" r="2.4" style="fill:var(--c2);opacity:.7"/>
+  <circle cx="110.0" cy="168.2" r="2.4" style="fill:var(--c2);opacity:.7"/>
+  <circle cx="119.7" cy="163.7" r="2.4" style="fill:var(--c2);opacity:.7"/>
+  <circle cx="155.8" cy="154.1" r="2.4" style="fill:var(--c2);opacity:.7"/>
+  <path d="M104.7,168.7 L294.8,121.5" style="fill:none;stroke:var(--c2);stroke-width:1.6;stroke-dasharray:6 4"/>
+</svg>
+</div>
+<div class="panel"><h4>Where the time goes</h4><p class="sub">Mean per input. Grey is prefill, colour is decode; the constraint runs inside decode.</p>
+<svg viewBox="0 0 320 232" role="img" aria-label="Mean time per input split into prefill and decode, with the constraint host time inside decode">
+  <text class="t-title" x="12" y="16" style="font-size:12px">Receipts · adapter</text>
+  <text class="t-val" x="308" y="16" text-anchor="end">4.80 s mean</text>
+  <rect x="12" y="22" width="16.3" height="16" rx="3" style="fill:var(--base)"/>
+  <rect x="28.3" y="22" width="279.7" height="16" rx="3" style="fill:var(--accent)"/>
+  <text class="t-sub" x="12" y="52">prefill 263 ms · decode 4532 ms · constraint 5.6 ms</text>
+  <text class="t-title" x="12" y="70" style="font-size:12px">Receipts · + drafts</text>
+  <text class="t-val" x="308" y="70" text-anchor="end">1.60 s mean</text>
+  <rect x="12" y="76" width="42.6" height="16" rx="3" style="fill:var(--base)"/>
+  <rect x="54.6" y="76" width="253.4" height="16" rx="3" style="fill:var(--c2)"/>
+  <text class="t-sub" x="12" y="106">prefill 231 ms · decode 1373 ms · constraint 3.0 ms</text>
+  <text class="t-title" x="12" y="124" style="font-size:12px">SQuAD · adapter</text>
+  <text class="t-val" x="308" y="124" text-anchor="end">0.69 s mean</text>
+  <rect x="12" y="130" width="155.9" height="16" rx="3" style="fill:var(--base)"/>
+  <rect x="167.9" y="130" width="140.1" height="16" rx="3" style="fill:var(--accent)"/>
+  <text class="t-sub" x="12" y="160">prefill 364 ms · decode 327 ms · constraint 0.6 ms</text>
+  <text class="t-title" x="12" y="178" style="font-size:12px">SQuAD · + drafts</text>
+  <text class="t-val" x="308" y="178" text-anchor="end">0.53 s mean</text>
+  <rect x="12" y="184" width="186.3" height="16" rx="3" style="fill:var(--base)"/>
+  <rect x="198.3" y="184" width="109.7" height="16" rx="3" style="fill:var(--c2)"/>
+  <text class="t-sub" x="12" y="214">prefill 334 ms · decode 197 ms · constraint 0.5 ms</text>
+</svg>
+</div>
+</div>
+<ul>
+  <li><strong>The constraint costs almost nothing.</strong> The host spends 0.05 ms a token choosing the allowed set (0.06 ms on SQuAD), while the GPU computes the step. That is 0.12% of decode time on receipts. With the constraint off, the same adapter's p50 is 4.31 s against 4.27 s with it on, and the two curves lie on top of each other.</li>
+  <li><strong>Exact drafts cut the cost of each answer token</strong> from 43 ms to 17 ms on receipts, where answers are long and copied from the input. The tail shrinks with it: p95 goes from 10.41 s to 3.53 s.</li>
+  <li><strong>Short answers are bound by prefill.</strong> A SQuAD answer averages 10 tokens, so reading the passage is 53% of each question's time (63% with drafts). Drafts cannot speed that part up.</li>
+  <li><strong>Answer length drives the rest.</strong> On SQuAD the base model is slower than the adapter: not knowing the format, it writes 18 tokens on average against 10. On receipts it is faster, because it writes fewer values (80 tokens against 110).</li>
+</ul>
+<div class="tablewrap"><table>
+  <tr><th>Seconds per input</th><th>p50</th><th>p90</th><th>p95</th><th>max</th><th>decode tok/s</th></tr>
+  <tr><td>Receipts, 96 · Base Qwen3.5-4B, constrained</td><td class="n">2.47</td><td class="n">6.49</td><td class="n">8.08</td><td class="n">12.23</td><td class="n">21.5</td></tr>
+  <tr><td>Receipts, 96 · LoRA adapter, constrained</td><td class="n">4.27</td><td class="n">7.17</td><td class="n">10.41</td><td class="n">12.20</td><td class="n">24.4</td></tr>
+  <tr><td>Receipts, 96 · LoRA adapter, constrained, exact drafts</td><td class="n">1.35</td><td class="n">2.59</td><td class="n">3.53</td><td class="n">4.73</td><td class="n">80.4</td></tr>
+  <tr><td>Receipts, 96 · LoRA adapter, no constraint</td><td class="n">4.31</td><td class="n">7.19</td><td class="n">10.41</td><td class="n">12.19</td><td class="n">24.2</td></tr>
+  <tr><td>SQuAD, 300 · Base Qwen3.5-4B, constrained</td><td class="n">1.04</td><td class="n">1.58</td><td class="n">2.01</td><td class="n">2.86</td><td class="n">23.5</td></tr>
+  <tr><td>SQuAD, 300 · Base, constrained, exact drafts</td><td class="n">0.64</td><td class="n">0.94</td><td class="n">1.29</td><td class="n">2.04</td><td class="n">45.1</td></tr>
+  <tr><td>SQuAD, 300 · LoRA adapter, constrained</td><td class="n">0.65</td><td class="n">0.91</td><td class="n">1.08</td><td class="n">1.62</td><td class="n">30.8</td></tr>
+  <tr><td>SQuAD, 300 · LoRA adapter, constrained, exact drafts</td><td class="n">0.53</td><td class="n">0.65</td><td class="n">0.69</td><td class="n">1.06</td><td class="n">51.2</td></tr>
+</table></div>
+<p class="cap">One run of each configuration on one machine, on mains power. All rows of a run share one process and one loaded model.</p>
+
+<h2 id="limits"><span class="num">11</span>Limits</h2>
+<ul>
+  <li>Apple silicon only, on macOS 26 with the mlx 0.32.3 wheel. The C constraint library is the only part that builds on Linux.</li>
+  <li>Qwen3.5 and Qwen3 text models only. Qwen3.5-4B and 9B are tested against mlx-lm on real checkpoints. Qwen3 is tested on its tokenizer, its chat template and tiny random models.</li>
+  <li>LoRA on a bf16 base. No full fine-tuning and no quantised training.</li>
+  <li>Greedy decoding, one sequence at a time.</li>
+  <li>A practical subset of JSON Schema. Anything outside it is refused by name, never ignored.</li>
+  <li>The quote rule binds values to the input's text. It cannot tell whether the model chose the right stretch.</li>
+  <li>Each recipe was run once, on one machine.</li>
+</ul>
+
+<h2 id="try"><span class="num">12</span>Try it</h2>
+<pre><code>python3 -m pip install mlx==0.32.3
+brew install simdjson
+git clone https://github.com/tanwargenairesearch/quotebound && cd quotebound
+make                                   # build/quotebound
+hf download Qwen/Qwen3.5-4B --local-dir models/qwen3.5-4b-16bit
+
+# a JSON answer whose quote must come from the message
+build/quotebound generate --model models/qwen3.5-4b-16bit \
+  --schema recipes/extractive-qa/schema.json --quote-source user \
+  --system 'Answer from the passage with JSON {"answer": ...}.' \
+  --user 'Passage: The Eiffel Tower was completed in 1889. Question: When was it completed?'
+
+# a whole recipe: data, training, four evaluations, scores
+recipes/receipts/run.sh models/qwen3.5-4b-16bit work/receipts</code></pre>
+<p>The <a href="https://github.com/tanwargenairesearch/quotebound#readme">README</a> lists every flag and how to run the tests, and the <a href="https://github.com/tanwargenairesearch/quotebound/tree/main/recipes">recipes</a> show how the numbers above were made. Issues and questions are welcome on GitHub.</p>
+</div>
+</main>
+
+<footer>
+  <div class="wrap">
+    quotebound is released under the Apache License 2.0. Parts adapt MLX and mlx-lm (MIT), as listed in <a href="https://github.com/tanwargenairesearch/quotebound/blob/main/NOTICE">NOTICE</a>. Qwen3.5 is by the Qwen team. SQuAD v1.1 is CC BY-SA 4.0 and CORD v2 is CC BY 4.0. Fonts: Source Serif 4, Inter and JetBrains Mono (SIL Open Font License).<br>
+    © 2026 Mohit Tanwar · <a href="https://github.com/tanwargenairesearch/quotebound">github.com/tanwargenairesearch/quotebound</a>
+  </div>
+</footer>
+</body>
+</html>
